@@ -13,7 +13,7 @@
  */
 
 import Result from './result.js';
-import Maybe from './maybe.js';
+import Maybe, { type AnyMaybe, type ValueFor } from './maybe.js';
 import { curry1 } from './-private/utils.js';
 
 /**
@@ -159,4 +159,144 @@ export function toOkOrElseErr<T extends {}, E>(
  */
 export function fromResult<T extends {}>(result: Result<T, unknown>): Maybe<T> {
   return result.isOk ? Maybe.just(result.value) : Maybe.nothing<T>();
+}
+
+/**
+  Evaluate an iterable of {@linkcode Maybe} instances from left to right and
+  collect their values into a {@linkcode Result} of an array, converting the
+  first {@linkcode "maybe".Nothing Nothing} encountered into an
+  {@linkcode "result".Err Err} with `errValue`. Stops advancing the iterator
+  immediately upon encountering the first `Nothing`.
+
+  @template T The type of the wrapped `Just` values.
+  @template E The type of the error value if any item is `Nothing`.
+  @param errValue The error value to wrap in `Err` if any item is `Nothing`.
+  @param maybes Any iterable of `Maybe` instances.
+  @returns `Ok` an array of unwrapped values if all items are `Just`, or
+           `Err(errValue)` upon the first `Nothing`.
+ */
+export function sequenceMaybeAsResult<T extends {} = never, E = never>(
+  errValue: E,
+  maybes: Iterable<Maybe<T>>
+): Result<T[], E>;
+export function sequenceMaybeAsResult<R extends AnyMaybe, E>(
+  errValue: E,
+  maybes: Iterable<R>
+): Result<Array<ValueFor<R>>, E>;
+export function sequenceMaybeAsResult<E>(errValue: E): {
+  <T extends {} = never>(maybes: Iterable<Maybe<T>>): Result<T[], E>;
+  <R extends AnyMaybe>(maybes: Iterable<R>): Result<Array<ValueFor<R>>, E>;
+};
+export function sequenceMaybeAsResult<T extends {}, E>(
+  errValue: E,
+  maybes?: Iterable<Maybe<T>>
+): Result<T[], E> | ((maybes: Iterable<Maybe<T>>) => Result<T[], E>) {
+  return curry1((items: Iterable<Maybe<T>>) => fromMaybe(errValue, Maybe.sequence(items)), maybes);
+}
+
+/**
+  Map each element of an iterable to a {@linkcode Maybe} and collect the
+  unwrapped values into a {@linkcode Result} of an array, converting the first
+  {@linkcode "maybe".Nothing Nothing} encountered into an
+  {@linkcode "result".Err Err} with `errValue`. Stops advancing the iterator
+  immediately upon encountering the first `Nothing`.
+
+  @template T The type of items in the input iterable.
+  @template U The type of values inside the resulting `Ok` array.
+  @template E The type of the error value if any mapped item is `Nothing`.
+  @param errValue The error value to wrap in `Err` if any mapped item is `Nothing`.
+  @param items Any iterable of items to traverse.
+  @param fn A function mapping each item to a `Maybe`.
+  @returns `Ok` an array of unwrapped values if all mapped items are `Just`,
+           or `Err(errValue)` upon the first `Nothing`.
+ */
+export function traverseMaybeAsResult<T, U extends {}, E>(
+  errValue: E,
+  items: Iterable<T>,
+  fn: (item: T) => Maybe<U>
+): Result<U[], E>;
+export function traverseMaybeAsResult<T, R extends AnyMaybe, E>(
+  errValue: E,
+  items: Iterable<T>,
+  fn: (item: T) => R
+): Result<Array<ValueFor<R>>, E>;
+export function traverseMaybeAsResult<T, E>(
+  errValue: E,
+  items: Iterable<T>
+): {
+  <U extends {}>(fn: (item: T) => Maybe<U>): Result<U[], E>;
+  <R extends AnyMaybe>(fn: (item: T) => R): Result<Array<ValueFor<R>>, E>;
+};
+export function traverseMaybeAsResult<E>(errValue: E): {
+  <T, U extends {}>(items: Iterable<T>, fn: (item: T) => Maybe<U>): Result<U[], E>;
+  <T, R extends AnyMaybe>(items: Iterable<T>, fn: (item: T) => R): Result<Array<ValueFor<R>>, E>;
+  <T>(items: Iterable<T>): {
+    <U extends {}>(fn: (item: T) => Maybe<U>): Result<U[], E>;
+    <R extends AnyMaybe>(fn: (item: T) => R): Result<Array<ValueFor<R>>, E>;
+  };
+};
+export function traverseMaybeAsResult<T, U extends {}, E>(
+  errValue: E,
+  items?: Iterable<T>,
+  fn?: (item: T) => Maybe<U>
+):
+  | Result<U[], E>
+  | ((fn: (item: T) => Maybe<U>) => Result<U[], E>)
+  | ((
+      items: Iterable<T>,
+      fn?: (item: T) => Maybe<U>
+    ) => Result<U[], E> | ((fn: (item: T) => Maybe<U>) => Result<U[], E>)) {
+  const withItems = (
+    curriedItems: Iterable<T>,
+    curriedFn?: (item: T) => Maybe<U>
+  ): Result<U[], E> | ((fn: (item: T) => Maybe<U>) => Result<U[], E>) =>
+    curry1(
+      (mapper: (item: T) => Maybe<U>) => fromMaybe(errValue, Maybe.traverse(curriedItems, mapper)),
+      curriedFn
+    );
+
+  return items === undefined ? withItems : withItems(items, fn);
+}
+
+/**
+  Combine two {@linkcode Maybe} instances into a {@linkcode Result} containing
+  a tuple of both values if both are {@linkcode "maybe".Just Just}, or
+  `Err(errValue)` if either is {@linkcode "maybe".Nothing Nothing}.
+
+  @template T The type of the value in the first `Maybe`.
+  @template U The type of the value in the second `Maybe`.
+  @template E The type of the error value if either `Maybe` is `Nothing`.
+  @param errValue The error value to wrap in `Err` if either `Maybe` is `Nothing`.
+  @param a The first `Maybe`.
+  @param b The second `Maybe`.
+  @returns `Ok([a, b])` if both are `Just`, otherwise `Err(errValue)`.
+ */
+export function zipMaybeAsResult<T extends {}, U extends {}, E>(
+  errValue: E,
+  a: Maybe<T>,
+  b: Maybe<U>
+): Result<[T, U], E>;
+export function zipMaybeAsResult<T extends {}, E>(
+  errValue: E,
+  a: Maybe<T>
+): <U extends {}>(b: Maybe<U>) => Result<[T, U], E>;
+export function zipMaybeAsResult<E>(errValue: E): {
+  <T extends {}, U extends {}>(a: Maybe<T>, b: Maybe<U>): Result<[T, U], E>;
+  <T extends {}>(a: Maybe<T>): <U extends {}>(b: Maybe<U>) => Result<[T, U], E>;
+};
+export function zipMaybeAsResult<T extends {}, U extends {}, E>(
+  errValue: E,
+  a?: Maybe<T>,
+  b?: Maybe<U>
+):
+  | Result<[T, U], E>
+  | ((b: Maybe<U>) => Result<[T, U], E>)
+  | ((a: Maybe<T>, b?: Maybe<U>) => Result<[T, U], E> | ((b: Maybe<U>) => Result<[T, U], E>)) {
+  const withA = (
+    curriedA: Maybe<T>,
+    curriedB?: Maybe<U>
+  ): Result<[T, U], E> | ((b: Maybe<U>) => Result<[T, U], E>) =>
+    curry1((other: Maybe<U>) => fromMaybe(errValue, Maybe.zip(curriedA, other)), curriedB);
+
+  return a === undefined ? withA : withA(a, b);
 }
