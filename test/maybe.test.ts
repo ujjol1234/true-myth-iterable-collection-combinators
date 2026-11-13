@@ -1452,4 +1452,161 @@ describe('`Maybe` class', () => {
       expect(unwrap(flattened)).toBeUndefined();
     });
   });
+
+  describe('`[Symbol.iterator]`', () => {
+    test('yields value once for `Just`', () => {
+      const aJust = maybe.just(42);
+      expect([...aJust]).toEqual([42]);
+
+      const collected: number[] = [];
+      for (const item of aJust) {
+        collected.push(item);
+      }
+      expect(collected).toEqual([42]);
+
+      const iter = aJust[Symbol.iterator]();
+      expect(iter.next()).toEqual({ value: 42, done: false });
+      expect(iter.next()).toEqual({ value: undefined, done: true });
+    });
+
+    test('yields nothing for `Nothing`', () => {
+      const aNothing = maybe.nothing<number>();
+      expect([...aNothing]).toEqual([]);
+
+      const collected: number[] = [];
+      for (const item of aNothing) {
+        collected.push(item);
+      }
+      expect(collected).toEqual([]);
+
+      const iter = aNothing[Symbol.iterator]();
+      expect(iter.next()).toEqual({ value: undefined, done: true });
+    });
+  });
+
+  describe('`zip` and `zipWith`', () => {
+    test('`zip` method and functions', () => {
+      const justNum = Maybe.just(1);
+      const justStr = Maybe.just('a');
+      const noNum = Maybe.nothing<number>();
+      const noStr = Maybe.nothing<string>();
+
+      const zipped = justNum.zip(justStr);
+      expectTypeOf(zipped).toEqualTypeOf<Maybe<[number, string]>>();
+      expect(zipped).toEqual(Maybe.just([1, 'a']));
+
+      expect(justNum.zip(noStr)).toEqual(Maybe.nothing());
+      expect(noNum.zip(justStr)).toEqual(Maybe.nothing());
+      expect(noNum.zip(noStr)).toEqual(Maybe.nothing());
+
+      expect(maybe.zip(justNum, justStr)).toEqual(Maybe.just([1, 'a']));
+      expect(maybe.zip(justNum)(justStr)).toEqual(Maybe.just([1, 'a']));
+      expect(Maybe.zip(justNum, justStr)).toEqual(Maybe.just([1, 'a']));
+      expect(Maybe.zip(justNum)(noStr)).toEqual(Maybe.nothing());
+    });
+
+    test('`zipWith` method and functions', () => {
+      const justNum = Maybe.just(2);
+      const justStr = Maybe.just('hello');
+      const noNum = Maybe.nothing<number>();
+      const noStr = Maybe.nothing<string>();
+      const combine = (n: number, s: string) => `${s}:${n}`;
+
+      const combined = justNum.zipWith(justStr, combine);
+      expectTypeOf(combined).toEqualTypeOf<Maybe<string>>();
+      expect(combined).toEqual(Maybe.just('hello:2'));
+
+      expect(justNum.zipWith(noStr, combine)).toEqual(Maybe.nothing());
+      expect(noNum.zipWith(justStr, combine)).toEqual(Maybe.nothing());
+      expect(noNum.zipWith(noStr, combine)).toEqual(Maybe.nothing());
+
+      expect(maybe.zipWith(justNum, justStr, combine)).toEqual(Maybe.just('hello:2'));
+      expect(maybe.zipWith(justNum, justStr)(combine)).toEqual(Maybe.just('hello:2'));
+      expect(maybe.zipWith(justNum)(justStr, combine)).toEqual(Maybe.just('hello:2'));
+      expect(maybe.zipWith(justNum)(justStr)(combine)).toEqual(Maybe.just('hello:2'));
+      expect(Maybe.zipWith(justNum, justStr, combine)).toEqual(Maybe.just('hello:2'));
+    });
+  });
+
+  describe('`sequence` and `traverse`', () => {
+    test('`sequence` with arrays and arbitrary iterables', () => {
+      const empty = maybe.sequence<number>([]);
+      expectTypeOf(empty).toEqualTypeOf<Maybe<number[]>>();
+      expect(empty).toEqual(Maybe.just([]));
+
+      const allJust = maybe.sequence([Maybe.just(1), Maybe.just(2), Maybe.just(3)]);
+      expectTypeOf(allJust).toEqualTypeOf<Maybe<number[]>>();
+      expect(allJust).toEqual(Maybe.just([1, 2, 3]));
+
+      const setOfMaybes = new Set([Maybe.just('a'), Maybe.just('b')]);
+      expect(Maybe.sequence(setOfMaybes)).toEqual(Maybe.just(['a', 'b']));
+
+      const withNothing = maybe.sequence([Maybe.just(1), Maybe.nothing<number>(), Maybe.just(3)]);
+      expectTypeOf(withNothing).toEqualTypeOf<Maybe<number[]>>();
+      expect(withNothing).toEqual(Maybe.nothing());
+    });
+
+    test('`sequence` stops advancing iterator immediately after first `Nothing`', () => {
+      let steps = 0;
+      function* gen(): IterableIterator<Maybe<number>> {
+        steps += 1;
+        yield Maybe.just(1);
+        steps += 1;
+        yield Maybe.nothing();
+        steps += 1;
+        yield Maybe.just(3);
+      }
+
+      const result = Maybe.sequence(gen());
+      expect(result).toEqual(Maybe.nothing());
+      expect(steps).toBe(2);
+
+      let nextCalls = 0;
+      const items = [Maybe.just(10), Maybe.nothing<number>(), Maybe.just(30)];
+      const customIterable: Iterable<Maybe<number>> = {
+        [Symbol.iterator]() {
+          let idx = 0;
+          return {
+            next() {
+              nextCalls += 1;
+              if (idx < items.length) {
+                return { value: items[idx++]!, done: false };
+              }
+              return { value: undefined, done: true };
+            },
+          };
+        },
+      };
+
+      expect(maybe.sequence(customIterable)).toEqual(Maybe.nothing());
+      expect(nextCalls).toBe(2);
+    });
+
+    test('`traverse` with arrays, sets, currying, and short-circuiting', () => {
+      const parsePositive = (n: number): Maybe<number> =>
+        n > 0 ? Maybe.just(n * 2) : Maybe.nothing();
+
+      const allValid = maybe.traverse(parsePositive, [1, 2, 3]);
+      expectTypeOf(allValid).toEqualTypeOf<Maybe<number[]>>();
+      expect(allValid).toEqual(Maybe.just([2, 4, 6]));
+
+      const curried = Maybe.traverse(parsePositive);
+      expect(curried(new Set([2, 3]))).toEqual(Maybe.just([4, 6]));
+      expect(curried([1, -1, 3])).toEqual(Maybe.nothing());
+
+      let visited = 0;
+      function* numbers() {
+        visited += 1;
+        yield 1;
+        visited += 1;
+        yield -2;
+        visited += 1;
+        yield 3;
+      }
+
+      const shortCircuited = maybe.traverse(parsePositive, numbers());
+      expect(shortCircuited).toEqual(Maybe.nothing());
+      expect(visited).toBe(2);
+    });
+  });
 });

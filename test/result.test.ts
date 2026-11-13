@@ -1613,4 +1613,166 @@ describe('`Result` method tests', () => {
       expect(unwrap(flattened)).toBeUndefined();
     });
   });
+
+  describe('`[Symbol.iterator]`', () => {
+    test('yields value once for `Ok`', () => {
+      const anOk = result.ok<number, string>(42);
+      expect([...anOk]).toEqual([42]);
+
+      const collected: number[] = [];
+      for (const item of anOk) {
+        collected.push(item);
+      }
+      expect(collected).toEqual([42]);
+
+      const iter = anOk[Symbol.iterator]();
+      expect(iter.next()).toEqual({ value: 42, done: false });
+      expect(iter.next()).toEqual({ value: undefined, done: true });
+    });
+
+    test('yields nothing for `Err`', () => {
+      const anErr = result.err<number, string>('fail');
+      expect([...anErr]).toEqual([]);
+
+      const collected: number[] = [];
+      for (const item of anErr) {
+        collected.push(item);
+      }
+      expect(collected).toEqual([]);
+
+      const iter = anErr[Symbol.iterator]();
+      expect(iter.next()).toEqual({ value: undefined, done: true });
+    });
+  });
+
+  describe('`zip` and `zipWith`', () => {
+    test('`zip` method and functions', () => {
+      const okNum = Result.ok<number, string>(1);
+      const okStr = Result.ok<string, Error>('a');
+      const errStr = Result.err<number, string>('err1');
+      const error2 = new Error('err2');
+      const errObj = Result.err<string, Error>(error2);
+
+      const zipped = okNum.zip(okStr);
+      expectTypeOf(zipped).toEqualTypeOf<Result<[number, string], string | Error>>();
+      expect(zipped).toEqual(Result.ok([1, 'a']));
+
+      expect(okNum.zip(errObj)).toEqual(Result.err(error2));
+      expect(errStr.zip(okStr)).toEqual(Result.err('err1'));
+      expect(errStr.zip(errObj)).toEqual(Result.err('err1'));
+
+      expect(result.zip(okNum, okStr)).toEqual(Result.ok([1, 'a']));
+      expect(result.zip(okNum)(okStr)).toEqual(Result.ok([1, 'a']));
+      expect(Result.zip(okNum, okStr)).toEqual(Result.ok([1, 'a']));
+      expect(Result.zip(okNum)(errObj)).toEqual(Result.err(error2));
+    });
+
+    test('`zipWith` method and functions', () => {
+      const okNum = Result.ok<number, string>(2);
+      const okStr = Result.ok<string, number>('hello');
+      const err1 = Result.err<number, string>('err1');
+      const err2 = Result.err<string, number>(404);
+      const combine = (n: number, s: string) => `${s}:${n}`;
+
+      const combined = okNum.zipWith(okStr, combine);
+      expectTypeOf(combined).toEqualTypeOf<Result<string, string | number>>();
+      expect(combined).toEqual(Result.ok('hello:2'));
+
+      expect(okNum.zipWith(err2, combine)).toEqual(Result.err(404));
+      expect(err1.zipWith(okStr, combine)).toEqual(Result.err('err1'));
+      expect(err1.zipWith(err2, combine)).toEqual(Result.err('err1'));
+
+      expect(result.zipWith(okNum, okStr, combine)).toEqual(Result.ok('hello:2'));
+      expect(result.zipWith(okNum, okStr)(combine)).toEqual(Result.ok('hello:2'));
+      expect(result.zipWith(okNum)(okStr, combine)).toEqual(Result.ok('hello:2'));
+      expect(result.zipWith(okNum)(okStr)(combine)).toEqual(Result.ok('hello:2'));
+      expect(Result.zipWith(okNum, okStr, combine)).toEqual(Result.ok('hello:2'));
+    });
+  });
+
+  describe('`sequence` and `traverse`', () => {
+    test('`sequence` with arrays and arbitrary iterables', () => {
+      const empty = result.sequence([]);
+      expectTypeOf(empty).toEqualTypeOf<Result<never[], never>>();
+      expect(empty).toEqual(Result.ok([]));
+
+      const allOk = result.sequence([Result.ok(1), Result.ok(2), Result.ok(3)]);
+      expectTypeOf(allOk).toEqualTypeOf<Result<number[], never>>();
+      expect(allOk).toEqual(Result.ok([1, 2, 3]));
+
+      const setOfResults = new Set([Result.ok('a'), Result.ok('b')]);
+      expect(Result.sequence(setOfResults)).toEqual(Result.ok(['a', 'b']));
+
+      const withErr = result.sequence([Result.ok(1), Result.err('boom'), Result.ok(3)]);
+      expectTypeOf(withErr).toEqualTypeOf<Result<number[], string>>();
+      expect(withErr).toEqual(Result.err('boom'));
+    });
+
+    test('`sequence` stops advancing iterator immediately after first `Err`', () => {
+      let steps = 0;
+      function* gen(): IterableIterator<Result<number, string>> {
+        steps += 1;
+        yield Result.ok(1);
+        steps += 1;
+        yield Result.err('stop here');
+        steps += 1;
+        yield Result.ok(3);
+      }
+
+      const res = Result.sequence(gen());
+      expect(res).toEqual(Result.err('stop here'));
+      expect(steps).toBe(2);
+
+      let nextCalls = 0;
+      const items: Array<Result<number, string>> = [
+        Result.ok(10),
+        Result.err('halt'),
+        Result.ok(30),
+      ];
+      const customIterable: Iterable<Result<number, string>> = {
+        [Symbol.iterator]() {
+          let idx = 0;
+          return {
+            next() {
+              nextCalls += 1;
+              if (idx < items.length) {
+                return { value: items[idx++]!, done: false };
+              }
+              return { value: undefined, done: true };
+            },
+          };
+        },
+      };
+
+      expect(result.sequence(customIterable)).toEqual(Result.err('halt'));
+      expect(nextCalls).toBe(2);
+    });
+
+    test('`traverse` with arrays, sets, currying, and short-circuiting', () => {
+      const checkPositive = (n: number): Result<number, string> =>
+        n > 0 ? Result.ok(n * 2) : Result.err(`non-positive: ${n}`);
+
+      const allValid = result.traverse(checkPositive, [1, 2, 3]);
+      expectTypeOf(allValid).toEqualTypeOf<Result<number[], string>>();
+      expect(allValid).toEqual(Result.ok([2, 4, 6]));
+
+      const curried = Result.traverse(checkPositive);
+      expect(curried(new Set([2, 3]))).toEqual(Result.ok([4, 6]));
+      expect(curried([1, -1, 3])).toEqual(Result.err('non-positive: -1'));
+
+      let visited = 0;
+      function* numbers() {
+        visited += 1;
+        yield 1;
+        visited += 1;
+        yield -2;
+        visited += 1;
+        yield 3;
+      }
+
+      const shortCircuited = result.traverse(checkPositive, numbers());
+      expect(shortCircuited).toEqual(Result.err('non-positive: -2'));
+      expect(visited).toBe(2);
+    });
+  });
 });

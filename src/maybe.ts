@@ -64,7 +64,12 @@ export type ValueFor<R extends AnyMaybe> = R extends SomeMaybe<infer T> ? T : ne
 let NOTHING: Nothing<{}>;
 
 // Defines the *implementation*, but not the *types*. See the exports below.
-class MaybeImpl<T extends {}> implements SomeMaybe<T> {
+class MaybeImpl<T extends {}> implements SomeMaybe<T>, Iterable<T> {
+  static zip: typeof zip;
+  static zipWith: typeof zipWith;
+  static sequence: typeof sequence;
+  static traverse: typeof traverse;
+
   // SAFETY: this is definitely assigned in the constructor for every *actual*
   // instance, but TS cannot see that: it is only set for `Nothing` instances
   // when `NOTHING` does not already exist.
@@ -404,6 +409,29 @@ class MaybeImpl<T extends {}> implements SomeMaybe<T> {
   // `Maybe<Maybe<Maybe<T>>>` at call sites with the wrapped value.
   flatten<A extends {}>(this: Maybe<Maybe<A>>): Maybe<A> {
     return this.andThen(identity);
+  }
+
+  /**
+    Implement the `Iterable` protocol for `Maybe`.
+
+    If the `Maybe` is {@linkcode Just}, the iterator yields the wrapped value
+    once and then finishes. If the `Maybe` is {@linkcode Nothing}, the iterator
+    finishes immediately without yielding any values.
+   */
+  *[Symbol.iterator](): IterableIterator<T> {
+    if (this.repr[0] === Variant.Just) {
+      yield this.repr[1];
+    }
+  }
+
+  /** Method variant for {@linkcode zip} */
+  zip<U extends {}>(other: Maybe<U>): Maybe<[T, U]> {
+    return this.zipWith(other, (a, b) => [a, b]);
+  }
+
+  /** Method variant for {@linkcode zipWith} */
+  zipWith<U extends {}, V extends {}>(other: Maybe<U>, fn: (a: T, b: U) => V): Maybe<V> {
+    return this.andThen((a) => other.map((b) => fn(a, b)));
   }
 }
 
@@ -1848,6 +1876,145 @@ export function flatten<T extends {}>(nested: Maybe<Maybe<T>>): Maybe<T> {
 }
 
 /**
+  Combine two {@linkcode Maybe} instances into a single `Maybe` containing a
+  tuple of both values if both are {@linkcode Just}, or {@linkcode Nothing} if
+  either is `Nothing`.
+
+  @template T The type of the value in the first `Maybe`.
+  @template U The type of the value in the second `Maybe`.
+  @param a The first `Maybe`.
+  @param b The second `Maybe`.
+  @returns `Just([a, b])` if both are `Just`, otherwise `Nothing`.
+ */
+export function zip<T extends {}, U extends {}>(a: Maybe<T>, b: Maybe<U>): Maybe<[T, U]>;
+export function zip<T extends {}>(a: Maybe<T>): <U extends {}>(b: Maybe<U>) => Maybe<[T, U]>;
+export function zip<T extends {}, U extends {}>(
+  a: Maybe<T>,
+  b?: Maybe<U>
+): Maybe<[T, U]> | ((b: Maybe<U>) => Maybe<[T, U]>) {
+  return curry1((other: Maybe<U>) => a.zip(other), b);
+}
+
+/**
+  Combine two {@linkcode Maybe} instances using a combiner function if both are
+  {@linkcode Just}, or return {@linkcode Nothing} if either is `Nothing`.
+
+  @template T The type of the value in the first `Maybe`.
+  @template U The type of the value in the second `Maybe`.
+  @template V The type of the combined value returned by `fn`.
+  @param a The first `Maybe`.
+  @param b The second `Maybe`.
+  @param fn The function to combine both unwrapped values.
+  @returns `Just(fn(a, b))` if both are `Just`, otherwise `Nothing`.
+ */
+export function zipWith<T extends {}, U extends {}, V extends {}>(
+  a: Maybe<T>,
+  b: Maybe<U>,
+  fn: (a: T, b: U) => V
+): Maybe<V>;
+export function zipWith<T extends {}, U extends {}>(
+  a: Maybe<T>,
+  b: Maybe<U>
+): <V extends {}>(fn: (a: T, b: U) => V) => Maybe<V>;
+export function zipWith<T extends {}>(
+  a: Maybe<T>
+): {
+  <U extends {}, V extends {}>(b: Maybe<U>, fn: (a: T, b: U) => V): Maybe<V>;
+  <U extends {}>(b: Maybe<U>): <V extends {}>(fn: (a: T, b: U) => V) => Maybe<V>;
+};
+export function zipWith<T extends {}, U extends {}, V extends {}>(
+  a: Maybe<T>,
+  b?: Maybe<U>,
+  fn?: (a: T, b: U) => V
+):
+  | Maybe<V>
+  | ((fn: (a: T, b: U) => V) => Maybe<V>)
+  | ((b: Maybe<U>, fn?: (a: T, b: U) => V) => Maybe<V> | ((fn: (a: T, b: U) => V) => Maybe<V>)) {
+  function partialOp<U extends {}, V extends {}>(
+    curriedB: Maybe<U>,
+    curriedFn?: (a: T, b: U) => V
+  ): Maybe<V> | ((fn: (a: T, b: U) => V) => Maybe<V>) {
+    return curry1((f: (a: T, b: U) => V) => a.zipWith(curriedB, f), curriedFn);
+  }
+
+  return b === undefined ? partialOp : partialOp(b, fn);
+}
+
+/**
+  Map each element of an iterable to a {@linkcode Maybe} and collect the
+  results into a single `Maybe` of an array. Stops advancing the iterator
+  immediately upon encountering the first {@linkcode Nothing}.
+
+  @template T The type of items in the input iterable.
+  @template U The type of values inside the resulting `Maybe`.
+  @param fn A function mapping each item to a `Maybe`.
+  @param items Any iterable of items to traverse.
+  @returns `Just` an array of unwrapped values if all mapped items are `Just`,
+           or `Nothing` upon the first `Nothing`.
+ */
+export function traverse<T, U extends {}>(
+  fn: (item: T) => Maybe<U>,
+  items: Iterable<T>
+): Maybe<U[]>;
+export function traverse<T, R extends AnyMaybe>(
+  fn: (item: T) => R,
+  items: Iterable<T>
+): Maybe<Array<ValueFor<R>>>;
+export function traverse<T, U extends {}>(
+  fn: (item: T) => Maybe<U>
+): (items: Iterable<T>) => Maybe<U[]>;
+export function traverse<T, R extends AnyMaybe>(
+  fn: (item: T) => R
+): (items: Iterable<T>) => Maybe<Array<ValueFor<R>>>;
+export function traverse<T, U extends {}>(
+  fn: (item: T) => Maybe<U>,
+  items?: Iterable<T>
+): Maybe<U[]> | ((items: Iterable<T>) => Maybe<U[]>) {
+  const op = (iterable: Iterable<T>): Maybe<U[]> => {
+    const values: U[] = [];
+    const iterator = iterable[Symbol.iterator]();
+    while (true) {
+      const step = iterator.next();
+      if (step.done) {
+        break;
+      }
+
+      const mapped = fn(step.value);
+      if (mapped.isNothing) {
+        return nothing();
+      }
+
+      values.push(mapped.value);
+    }
+
+    return just(values);
+  };
+
+  return curry1(op, items);
+}
+
+/**
+  Evaluate an iterable of {@linkcode Maybe} instances from left to right and
+  collect their values into a single `Maybe` of an array. Stops advancing the
+  iterator immediately upon encountering the first {@linkcode Nothing}.
+
+  @template T The type of the wrapped values.
+  @param maybes Any iterable of `Maybe` instances.
+  @returns `Just` an array of unwrapped values if all items are `Just`, or
+           `Nothing` upon the first `Nothing`.
+ */
+export function sequence<T extends {} = {}>(maybes: Iterable<Maybe<T>>): Maybe<T[]>;
+export function sequence<R extends AnyMaybe>(maybes: Iterable<R>): Maybe<Array<ValueFor<R>>>;
+export function sequence<T extends {}>(maybes: Iterable<Maybe<T>>): Maybe<T[]> {
+  return traverse(identity, maybes);
+}
+
+MaybeImpl.zip = zip;
+MaybeImpl.zipWith = zipWith;
+MaybeImpl.sequence = sequence;
+MaybeImpl.traverse = traverse;
+
+/**
   The public interface for the {@linkcode Maybe} class *as a value*: a
   constructor and the associated static properties.
  */
@@ -1856,6 +2023,10 @@ export interface MaybeConstructor {
   of: typeof MaybeImpl.of;
   just: typeof MaybeImpl.just;
   nothing: typeof MaybeImpl.nothing;
+  zip: typeof zip;
+  zipWith: typeof zipWith;
+  sequence: typeof sequence;
+  traverse: typeof traverse;
 }
 
 // Duplicate documentation because it will show up more nicely when rendered in

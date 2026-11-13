@@ -72,7 +72,12 @@ type TypesFor<S extends AnyTask | AnyResult> =
 /**
   Internal implementation details for {@linkcode Task}.
  */
-class TaskImpl<T, E> implements PromiseLike<Result<T, E>> {
+class TaskImpl<T, E> implements PromiseLike<Result<T, E>>, AsyncIterable<Result<T, E>> {
+  static zip: typeof zip;
+  static zipWith: typeof zipWith;
+  static sequence: typeof sequence;
+  static traverse: typeof traverse;
+
   readonly #promise: Promise<Result<T, E>>;
   #state: Repr<T, E> = [State.Pending];
 
@@ -954,6 +959,26 @@ class TaskImpl<T, E> implements PromiseLike<Result<T, E>> {
   flatten<A, F, G>(this: Task<Task<A, F>, G>): Task<A, F | G> {
     return this.andThen(identity);
   }
+
+  /**
+    Implement the `AsyncIterable` protocol for `Task`.
+
+    Yields a single {@linkcode Result}: {@linkcode result.Ok Ok(value)} for a
+    resolved task, or {@linkcode result.Err Err(reason)} for a rejected task.
+   */
+  async *[Symbol.asyncIterator](): AsyncIterableIterator<Result<T, E>> {
+    yield await this.#promise;
+  }
+
+  /** Method variant for {@linkcode zip} */
+  zip<U, F = E>(other: Task<U, F> | Result<U, F>): Task<[T, U], E | F> {
+    return this.zipWith(other, (a, b) => [a, b]);
+  }
+
+  /** Method variant for {@linkcode zipWith} */
+  zipWith<U, V, F = E>(other: Task<U, F> | Result<U, F>, fn: (a: T, b: U) => V): Task<V, E | F> {
+    return this.andThen((a) => other.map((b) => fn(a, b)));
+  }
 }
 
 /**
@@ -1564,6 +1589,11 @@ export interface TaskConstructor {
     @group Constructors
    */
   withResolvers<T, E>(): WithResolvers<T, E>;
+
+  zip: typeof zip;
+  zipWith: typeof zipWith;
+  sequence: typeof sequence;
+  traverse: typeof traverse;
 }
 
 // Duplicate documentation because it will show up more nicely when rendered in
@@ -2689,6 +2719,175 @@ export function flatten<T, E, F>(nestedTask: Task<Task<T, E>, F>): Task<T, E | F
   // function dispatch.
   return nestedTask.andThen(identity);
 }
+
+/**
+  Combine two {@linkcode Task} instances (or a `Task` and a {@linkcode Result})
+  into a single `Task` resolving to a tuple of both values if both succeed, or
+  rejecting with the first rejection encountered.
+
+  @template T The type of the resolved value in the first `Task`.
+  @template E The type of the rejection reason in the first `Task`.
+  @template U The type of the resolved value in the second `Task` or `Result`.
+  @template F The type of the rejection reason in the second `Task` or `Result`.
+  @param a The first `Task`.
+  @param b The second `Task` or `Result`.
+  @returns A `Task` resolving to `[a, b]` if both succeed, or rejecting with the
+           first rejection.
+ */
+export function zip<T, E, U, F>(a: Task<T, E>, b: Task<U, F> | Result<U, F>): Task<[T, U], E | F>;
+export function zip<T, E>(
+  a: Task<T, E>
+): <U, F>(b: Task<U, F> | Result<U, F>) => Task<[T, U], E | F>;
+export function zip<T, E, U, F>(
+  a: Task<T, E>,
+  b?: Task<U, F> | Result<U, F>
+): Task<[T, U], E | F> | ((b: Task<U, F> | Result<U, F>) => Task<[T, U], E | F>) {
+  return curry1((other: Task<U, F> | Result<U, F>) => a.zip(other), b);
+}
+
+/**
+  Combine two {@linkcode Task} instances (or a `Task` and a {@linkcode Result})
+  using a combiner function if both succeed, or reject with the first rejection
+  encountered.
+
+  @template T The type of the resolved value in the first `Task`.
+  @template E The type of the rejection reason in the first `Task`.
+  @template U The type of the resolved value in the second `Task` or `Result`.
+  @template F The type of the rejection reason in the second `Task` or `Result`.
+  @template V The type of the combined value returned by `fn`.
+  @param a The first `Task`.
+  @param b The second `Task` or `Result`.
+  @param fn The function to combine both resolved values.
+  @returns A `Task` resolving to `fn(a, b)` if both succeed, or rejecting with
+           the first rejection.
+ */
+export function zipWith<T, E, U, F, V>(
+  a: Task<T, E>,
+  b: Task<U, F> | Result<U, F>,
+  fn: (a: T, b: U) => V
+): Task<V, E | F>;
+export function zipWith<T, E, U, F>(
+  a: Task<T, E>,
+  b: Task<U, F> | Result<U, F>
+): <V>(fn: (a: T, b: U) => V) => Task<V, E | F>;
+export function zipWith<T, E>(
+  a: Task<T, E>
+): {
+  <U, F, V>(b: Task<U, F> | Result<U, F>, fn: (a: T, b: U) => V): Task<V, E | F>;
+  <U, F>(b: Task<U, F> | Result<U, F>): <V>(fn: (a: T, b: U) => V) => Task<V, E | F>;
+};
+export function zipWith<T, E, U, F, V>(
+  a: Task<T, E>,
+  b?: Task<U, F> | Result<U, F>,
+  fn?: (a: T, b: U) => V
+):
+  | Task<V, E | F>
+  | ((fn: (a: T, b: U) => V) => Task<V, E | F>)
+  | ((
+      b: Task<U, F> | Result<U, F>,
+      fn?: (a: T, b: U) => V
+    ) => Task<V, E | F> | ((fn: (a: T, b: U) => V) => Task<V, E | F>)) {
+  function partialOp<U, F, V>(
+    curriedB: Task<U, F> | Result<U, F>,
+    curriedFn?: (a: T, b: U) => V
+  ): Task<V, E | F> | ((fn: (a: T, b: U) => V) => Task<V, E | F>) {
+    return curry1((f: (a: T, b: U) => V) => a.zipWith(curriedB, f), curriedFn);
+  }
+
+  return b === undefined ? partialOp : partialOp(b, fn);
+}
+
+/**
+  Map each element of a synchronous or asynchronous iterable to a
+  {@linkcode Task}, running each task sequentially, and collect the resolved
+  values into a single `Task` of an array. Stops advancing the iterator
+  immediately upon encountering the first rejected `Task`.
+
+  @template T The type of items in the input iterable.
+  @template U The type of resolved values inside the resulting `Task`.
+  @template E The type of rejection reason inside the resulting `Task`.
+  @param fn A function mapping each item to a `Task`.
+  @param items Any `Iterable` or `AsyncIterable` of items to traverse.
+  @returns A `Task` resolving to an array of resolved values if all tasks
+           resolve, or rejecting with the first rejection encountered.
+ */
+export function traverse<T, U, E>(
+  fn: (item: T) => Task<U, E> | Result<U, E>,
+  items: Iterable<T> | AsyncIterable<T>
+): Task<U[], E>;
+export function traverse<T, R extends AnyTask | AnyResult>(
+  fn: (item: T) => R,
+  items: Iterable<T> | AsyncIterable<T>
+): Task<Array<ResolvesTo<R>>, RejectsWith<R>>;
+export function traverse<T, U, E>(
+  fn: (item: T) => Task<U, E> | Result<U, E>
+): (items: Iterable<T> | AsyncIterable<T>) => Task<U[], E>;
+export function traverse<T, R extends AnyTask | AnyResult>(
+  fn: (item: T) => R
+): (items: Iterable<T> | AsyncIterable<T>) => Task<Array<ResolvesTo<R>>, RejectsWith<R>>;
+export function traverse<T, U, E>(
+  fn: (item: T) => Task<U, E> | Result<U, E>,
+  items?: Iterable<T> | AsyncIterable<T>
+): Task<U[], E> | ((items: Iterable<T> | AsyncIterable<T>) => Task<U[], E>) {
+  const op = (iterable: Iterable<T> | AsyncIterable<T>): Task<U[], E> =>
+    new Task((resolve, reject) => {
+      (async () => {
+        const values: U[] = [];
+        const iterator =
+          Symbol.iterator in iterable
+            ? iterable[Symbol.iterator]()
+            : iterable[Symbol.asyncIterator]();
+
+        while (true) {
+          const step = await iterator.next();
+          if (step.done) {
+            break;
+          }
+
+          const res = await fn(step.value);
+          if (res.isErr) {
+            reject(res.error);
+            return;
+          }
+
+          values.push(res.value);
+        }
+
+        resolve(values);
+      })();
+    });
+
+  return curry1(op, items);
+}
+
+/**
+  Evaluate a synchronous or asynchronous iterable of {@linkcode Task} instances
+  sequentially from left to right and collect their resolved values into a
+  single `Task` of an array. Stops advancing the iterator immediately upon
+  encountering the first rejected `Task`.
+
+  @template T The type of the resolved values.
+  @template E The type of the rejection reasons.
+  @param tasks Any `Iterable` or `AsyncIterable` of `Task` instances.
+  @returns A `Task` resolving to an array of resolved values if all tasks
+           resolve, or rejecting with the first rejection encountered.
+ */
+export function sequence<T = never, E = never>(
+  tasks: Iterable<Task<T, E> | Result<T, E>> | AsyncIterable<Task<T, E> | Result<T, E>>
+): Task<T[], E>;
+export function sequence<R extends AnyTask | AnyResult>(
+  tasks: Iterable<R> | AsyncIterable<R>
+): Task<Array<ResolvesTo<R>>, RejectsWith<R>>;
+export function sequence<T, E>(
+  tasks: Iterable<Task<T, E> | Result<T, E>> | AsyncIterable<Task<T, E> | Result<T, E>>
+): Task<T[], E> {
+  return traverse(identity, tasks);
+}
+
+TaskImpl.zip = zip;
+TaskImpl.zipWith = zipWith;
+TaskImpl.sequence = sequence;
+TaskImpl.traverse = traverse;
 
 /**
   Execute a callback that produces either a {@linkcode Task} or the “sentinel”

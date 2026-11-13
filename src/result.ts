@@ -74,7 +74,12 @@ export type OkFor<R extends AnyResult> = TypesFor<R>['ok'];
 export type ErrFor<R extends AnyResult> = TypesFor<R>['err'];
 
 // Defines the *implementation*, but not the *types*. See the exports below.
-class ResultImpl<T, E> {
+class ResultImpl<T, E> implements Iterable<T> {
+  static zip: typeof zip;
+  static zipWith: typeof zipWith;
+  static sequence: typeof sequence;
+  static traverse: typeof traverse;
+
   private constructor(private repr: Repr<T, E>) {}
 
   /** @internal */
@@ -379,6 +384,29 @@ class ResultImpl<T, E> {
   // wrapped value.
   flatten<A, F>(this: Result<Result<A, F>, E>): Result<A, E | F> {
     return this.andThen(identity);
+  }
+
+  /**
+    Implement the `Iterable` protocol for `Result`.
+
+    If the `Result` is {@linkcode Ok}, the iterator yields the wrapped value
+    once and then finishes. If the `Result` is {@linkcode Err}, the iterator
+    finishes immediately without yielding any values.
+   */
+  *[Symbol.iterator](): IterableIterator<T> {
+    if (this.repr[0] === Variant.Ok) {
+      yield this.repr[1];
+    }
+  }
+
+  /** Method variant for {@linkcode zip} */
+  zip<U, F = E>(other: Result<U, F>): Result<[T, U], E | F> {
+    return this.zipWith(other, (a, b) => [a, b]);
+  }
+
+  /** Method variant for {@linkcode zipWith} */
+  zipWith<U, V, F = E>(other: Result<U, F>, fn: (a: T, b: U) => V): Result<V, E | F> {
+    return this.andThen((a) => other.map((b) => fn(a, b)));
   }
 
   cast() {
@@ -2018,12 +2046,166 @@ export function flatten<T, E1, E2>(nested: Result<Result<T, E2>, E1>): Result<T,
 }
 
 /**
+  Combine two {@linkcode Result} instances into a single `Result` containing a
+  tuple of both values if both are {@linkcode Ok}, or the first {@linkcode Err}
+  encountered.
+
+  @template T The type of the `Ok` value in the first `Result`.
+  @template E The type of the `Err` value in the first `Result`.
+  @template U The type of the `Ok` value in the second `Result`.
+  @template F The type of the `Err` value in the second `Result`.
+  @param a The first `Result`.
+  @param b The second `Result`.
+  @returns `Ok([a, b])` if both are `Ok`, otherwise the first `Err`.
+ */
+export function zip<T, E, U, F>(a: Result<T, E>, b: Result<U, F>): Result<[T, U], E | F>;
+export function zip<T, E>(a: Result<T, E>): <U, F>(b: Result<U, F>) => Result<[T, U], E | F>;
+export function zip<T, E, U, F>(
+  a: Result<T, E>,
+  b?: Result<U, F>
+): Result<[T, U], E | F> | ((b: Result<U, F>) => Result<[T, U], E | F>) {
+  return curry1((other: Result<U, F>) => a.zip(other), b);
+}
+
+/**
+  Combine two {@linkcode Result} instances using a combiner function if both are
+  {@linkcode Ok}, or return the first {@linkcode Err} encountered.
+
+  @template T The type of the `Ok` value in the first `Result`.
+  @template E The type of the `Err` value in the first `Result`.
+  @template U The type of the `Ok` value in the second `Result`.
+  @template F The type of the `Err` value in the second `Result`.
+  @template V The type of the combined value returned by `fn`.
+  @param a The first `Result`.
+  @param b The second `Result`.
+  @param fn The function to combine both unwrapped `Ok` values.
+  @returns `Ok(fn(a, b))` if both are `Ok`, otherwise the first `Err`.
+ */
+export function zipWith<T, E, U, F, V>(
+  a: Result<T, E>,
+  b: Result<U, F>,
+  fn: (a: T, b: U) => V
+): Result<V, E | F>;
+export function zipWith<T, E, U, F>(
+  a: Result<T, E>,
+  b: Result<U, F>
+): <V>(fn: (a: T, b: U) => V) => Result<V, E | F>;
+export function zipWith<T, E>(
+  a: Result<T, E>
+): {
+  <U, F, V>(b: Result<U, F>, fn: (a: T, b: U) => V): Result<V, E | F>;
+  <U, F>(b: Result<U, F>): <V>(fn: (a: T, b: U) => V) => Result<V, E | F>;
+};
+export function zipWith<T, E, U, F, V>(
+  a: Result<T, E>,
+  b?: Result<U, F>,
+  fn?: (a: T, b: U) => V
+):
+  | Result<V, E | F>
+  | ((fn: (a: T, b: U) => V) => Result<V, E | F>)
+  | ((
+      b: Result<U, F>,
+      fn?: (a: T, b: U) => V
+    ) => Result<V, E | F> | ((fn: (a: T, b: U) => V) => Result<V, E | F>)) {
+  function partialOp<U, F, V>(
+    curriedB: Result<U, F>,
+    curriedFn?: (a: T, b: U) => V
+  ): Result<V, E | F> | ((fn: (a: T, b: U) => V) => Result<V, E | F>) {
+    return curry1((f: (a: T, b: U) => V) => a.zipWith(curriedB, f), curriedFn);
+  }
+
+  return b === undefined ? partialOp : partialOp(b, fn);
+}
+
+/**
+  Map each element of an iterable to a {@linkcode Result} and collect the
+  results into a single `Result` of an array. Stops advancing the iterator
+  immediately upon encountering the first {@linkcode Err}.
+
+  @template T The type of items in the input iterable.
+  @template U The type of `Ok` values inside the resulting `Result`.
+  @template E The type of `Err` value inside the resulting `Result`.
+  @param fn A function mapping each item to a `Result`.
+  @param items Any iterable of items to traverse.
+  @returns `Ok` an array of unwrapped values if all mapped items are `Ok`,
+           or the first `Err` encountered.
+ */
+export function traverse<T, U, E>(
+  fn: (item: T) => Result<U, E>,
+  items: Iterable<T>
+): Result<U[], E>;
+export function traverse<T, R extends AnyResult>(
+  fn: (item: T) => R,
+  items: Iterable<T>
+): Result<Array<OkFor<R>>, ErrFor<R>>;
+export function traverse<T, U, E>(
+  fn: (item: T) => Result<U, E>
+): (items: Iterable<T>) => Result<U[], E>;
+export function traverse<T, R extends AnyResult>(
+  fn: (item: T) => R
+): (items: Iterable<T>) => Result<Array<OkFor<R>>, ErrFor<R>>;
+export function traverse<T, U, E>(
+  fn: (item: T) => Result<U, E>,
+  items?: Iterable<T>
+): Result<U[], E> | ((items: Iterable<T>) => Result<U[], E>) {
+  const op = (iterable: Iterable<T>): Result<U[], E> => {
+    const values: U[] = [];
+    const iterator = iterable[Symbol.iterator]();
+    while (true) {
+      const step = iterator.next();
+      if (step.done) {
+        break;
+      }
+
+      const mapped = fn(step.value);
+      if (mapped.isErr) {
+        return (mapped as Err<U, E>).cast();
+      }
+
+      values.push(mapped.value);
+    }
+
+    return Result.ok(values);
+  };
+
+  return curry1(op, items);
+}
+
+/**
+  Evaluate an iterable of {@linkcode Result} instances from left to right and
+  collect their values into a single `Result` of an array. Stops advancing the
+  iterator immediately upon encountering the first {@linkcode Err}.
+
+  @template T The type of the wrapped `Ok` values.
+  @template E The type of the wrapped `Err` values.
+  @param results Any iterable of `Result` instances.
+  @returns `Ok` an array of unwrapped values if all items are `Ok`, or the
+           first `Err` encountered.
+ */
+export function sequence<T = never, E = never>(results: Iterable<Result<T, E>>): Result<T[], E>;
+export function sequence<R extends AnyResult>(
+  results: Iterable<R>
+): Result<Array<OkFor<R>>, ErrFor<R>>;
+export function sequence<T, E>(results: Iterable<Result<T, E>>): Result<T[], E> {
+  return traverse(identity, results);
+}
+
+ResultImpl.zip = zip;
+ResultImpl.zipWith = zipWith;
+ResultImpl.sequence = sequence;
+ResultImpl.traverse = traverse;
+
+/**
   The public interface for the {@linkcode Result} class *as a value*: the static
   constructors `ok` and `err` produce a `Result` with that variant.
  */
 export interface ResultConstructor {
   ok: typeof ResultImpl.ok;
   err: typeof ResultImpl.err;
+  zip: typeof zip;
+  zipWith: typeof zipWith;
+  sequence: typeof sequence;
+  traverse: typeof traverse;
 }
 
 // Duplicate documentation because it will show up more nicely when rendered in

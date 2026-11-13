@@ -3765,6 +3765,199 @@ describe('module-scope functions', () => {
       expect(flattened.state).toBe(State.Pending);
     });
   });
+
+  describe('`[Symbol.asyncIterator]`', () => {
+    test('yields `Ok(value)` once for a resolved `Task`', async () => {
+      const task = Task.resolve<number, string>(42);
+      const yielded: Array<Result<number, string>> = [];
+      for await (const res of task) {
+        yielded.push(res);
+      }
+      expect(yielded).toEqual([Result.ok(42)]);
+
+      const iter = task[Symbol.asyncIterator]();
+      expect(await iter.next()).toEqual({ value: Result.ok(42), done: false });
+      expect(await iter.next()).toEqual({ value: undefined, done: true });
+    });
+
+    test('yields `Err(reason)` once for a rejected `Task`', async () => {
+      const task = Task.reject<number, string>('boom');
+      const yielded: Array<Result<number, string>> = [];
+      for await (const res of task) {
+        yielded.push(res);
+      }
+      expect(yielded).toEqual([Result.err('boom')]);
+
+      const iter = task[Symbol.asyncIterator]();
+      expect(await iter.next()).toEqual({ value: Result.err('boom'), done: false });
+      expect(await iter.next()).toEqual({ value: undefined, done: true });
+    });
+  });
+
+  describe('`zip` and `zipWith`', () => {
+    test('`zip` method and functions', async () => {
+      const taskNum = Task.resolve<number, string>(1);
+      const taskStr = Task.resolve<string, number>('a');
+      const rejStr = Task.reject<number, string>('err1');
+      const rejNum = Task.reject<string, number>(404);
+
+      const zipped = taskNum.zip(taskStr);
+      expectTypeOf(zipped).toEqualTypeOf<Task<[number, string], string | number>>();
+      expect(await zipped).toEqual(Result.ok([1, 'a']));
+
+      expect(await taskNum.zip(rejNum)).toEqual(Result.err(404));
+      expect(await rejStr.zip(taskStr)).toEqual(Result.err('err1'));
+      expect(await rejStr.zip(rejNum)).toEqual(Result.err('err1'));
+
+      expect(await taskNum.zip(Result.ok('ok'))).toEqual(Result.ok([1, 'ok']));
+      expect(await taskNum.zip(Result.err('err-res'))).toEqual(Result.err('err-res'));
+
+      expect(await Task.zip(taskNum, taskStr)).toEqual(Result.ok([1, 'a']));
+      expect(await Task.zip(taskNum)(taskStr)).toEqual(Result.ok([1, 'a']));
+      expect(await Task.zip(taskNum)(rejNum)).toEqual(Result.err(404));
+    });
+
+    test('`zipWith` method and functions', async () => {
+      const taskNum = Task.resolve<number, string>(2);
+      const taskStr = Task.resolve<string, number>('hello');
+      const rejStr = Task.reject<number, string>('err1');
+      const rejNum = Task.reject<string, number>(404);
+      const combine = (n: number, s: string) => `${s}:${n}`;
+
+      const combined = taskNum.zipWith(taskStr, combine);
+      expectTypeOf(combined).toEqualTypeOf<Task<string, string | number>>();
+      expect(await combined).toEqual(Result.ok('hello:2'));
+
+      expect(await taskNum.zipWith(rejNum, combine)).toEqual(Result.err(404));
+      expect(await rejStr.zipWith(taskStr, combine)).toEqual(Result.err('err1'));
+      expect(await rejStr.zipWith(rejNum, combine)).toEqual(Result.err('err1'));
+
+      expect(await Task.zipWith(taskNum, taskStr, combine)).toEqual(Result.ok('hello:2'));
+      expect(await Task.zipWith(taskNum, taskStr)(combine)).toEqual(Result.ok('hello:2'));
+      expect(await Task.zipWith(taskNum)(taskStr, combine)).toEqual(Result.ok('hello:2'));
+      expect(await Task.zipWith(taskNum)(taskStr)(combine)).toEqual(Result.ok('hello:2'));
+    });
+  });
+
+  describe('`sequence` and `traverse`', () => {
+    test('`sequence` with synchronous and asynchronous iterables', async () => {
+      const empty = Task.sequence([]);
+      expectTypeOf(empty).toEqualTypeOf<Task<never[], never>>();
+      expect(await empty).toEqual(Result.ok([]));
+
+      const allResolved = Task.sequence([Task.resolve(1), Task.resolve(2), Task.resolve(3)]);
+      expectTypeOf(allResolved).toEqualTypeOf<Task<number[], never>>();
+      expect(await allResolved).toEqual(Result.ok([1, 2, 3]));
+
+      const asyncIterable: AsyncIterable<Task<number, string>> = {
+        [Symbol.asyncIterator]() {
+          const items: Array<Task<number, string>> = [Task.resolve(10), Task.resolve(20)];
+          let index = 0;
+          return {
+            async next() {
+              if (index < items.length) {
+                return { value: items[index++]!, done: false };
+              }
+              return { value: undefined, done: true };
+            },
+          };
+        },
+      };
+
+      const fromAsync = Task.sequence(asyncIterable);
+      expectTypeOf(fromAsync).toEqualTypeOf<Task<number[], string>>();
+      expect(await fromAsync).toEqual(Result.ok([10, 20]));
+
+      async function* asyncGen() {
+        yield Task.resolve<number, string>(30);
+        yield Task.resolve<number, string>(40);
+      }
+
+      const fromAsyncGen = Task.sequence(asyncGen());
+      expectTypeOf(fromAsyncGen).toEqualTypeOf<Task<number[], string>>();
+      expect(await fromAsyncGen).toEqual(Result.ok([30, 40]));
+
+      const withRejection = Task.sequence([
+        Task.resolve(1),
+        Task.reject('failed'),
+        Task.resolve(3),
+      ]);
+      expectTypeOf(withRejection).toEqualTypeOf<Task<number[], string>>();
+      expect(await withRejection).toEqual(Result.err('failed'));
+    });
+
+    test('`sequence` stops advancing iterator immediately after first rejection', async () => {
+      let syncSteps = 0;
+      function* syncTasks(): IterableIterator<Task<number, string>> {
+        syncSteps += 1;
+        yield Task.resolve(1);
+        syncSteps += 1;
+        yield Task.reject('stop-sync');
+        syncSteps += 1;
+        yield Task.resolve(3);
+      }
+
+      expect(await Task.sequence(syncTasks())).toEqual(Result.err('stop-sync'));
+      expect(syncSteps).toBe(2);
+
+      let asyncSteps = 0;
+      const asyncTasks: AsyncIterable<Task<number, string>> = {
+        [Symbol.asyncIterator]() {
+          const factories: Array<() => Task<number, string>> = [
+            () => Task.resolve(1),
+            () => Task.reject('stop-async'),
+            () => Task.resolve(3),
+          ];
+          let index = 0;
+          return {
+            async next() {
+              if (index < factories.length) {
+                asyncSteps += 1;
+                return { value: factories[index++]!(), done: false };
+              }
+              return { value: undefined, done: true };
+            },
+          };
+        },
+      };
+
+      expect(await Task.sequence(asyncTasks)).toEqual(Result.err('stop-async'));
+      expect(asyncSteps).toBe(2);
+    });
+
+    test('`traverse` with sync/async iterables, currying, and short-circuiting', async () => {
+      const order: number[] = [];
+      const processItem = (n: number): Task<number, string> =>
+        new Task((resolve, reject) => {
+          order.push(n);
+          if (n > 0) {
+            resolve(n * 2);
+          } else {
+            reject(`bad: ${n}`);
+          }
+        });
+
+      const okRes = await Task.traverse(processItem, [1, 2, 3]);
+      expect(okRes).toEqual(Result.ok([2, 4, 6]));
+      expect(order).toEqual([1, 2, 3]);
+
+      const curried = Task.traverse(processItem);
+      expect(await curried(new Set([4, 5]))).toEqual(Result.ok([8, 10]));
+
+      let visited = 0;
+      async function* asyncNumbers(): AsyncIterableIterator<number> {
+        visited += 1;
+        yield 1;
+        visited += 1;
+        yield -5;
+        visited += 1;
+        yield 3;
+      }
+
+      expect(await curried(asyncNumbers())).toEqual(Result.err('bad: -5'));
+      expect(visited).toBe(2);
+    });
+  });
 });
 
 describe('type utilities', () => {
