@@ -3937,12 +3937,19 @@ describe('module-scope functions', () => {
           }
         });
 
-      const okRes = await Task.traverse(processItem, [1, 2, 3]);
-      expect(okRes).toEqual(Result.ok([2, 4, 6]));
+      const nonCurriedItemsFirst = Task.traverse([1, 2, 3], (n) => processItem(n));
+      expectTypeOf(nonCurriedItemsFirst).toEqualTypeOf<Task<number[], string>>();
+      expect(await nonCurriedItemsFirst).toEqual(Result.ok([2, 4, 6]));
       expect(order).toEqual([1, 2, 3]);
 
-      const curried = Task.traverse(processItem);
-      expect(await curried(new Set([4, 5]))).toEqual(Result.ok([8, 10]));
+      const okRes = await Task.traverse(processItem, [1, 2, 3]);
+      expect(okRes).toEqual(Result.ok([2, 4, 6]));
+
+      const curriedFn = Task.traverse(processItem);
+      expect(await curriedFn(new Set([4, 5]))).toEqual(Result.ok([8, 10]));
+
+      const curriedItems = Task.traverse([4, 5]);
+      expect(await curriedItems(processItem)).toEqual(Result.ok([8, 10]));
 
       let visited = 0;
       async function* asyncNumbers(): AsyncIterableIterator<number> {
@@ -3954,7 +3961,7 @@ describe('module-scope functions', () => {
         yield 3;
       }
 
-      expect(await curried(asyncNumbers())).toEqual(Result.err('bad: -5'));
+      expect(await Task.traverse(asyncNumbers(), processItem)).toEqual(Result.err('bad: -5'));
       expect(visited).toBe(2);
     });
   });

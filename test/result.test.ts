@@ -1752,13 +1752,20 @@ describe('`Result` method tests', () => {
       const checkPositive = (n: number): Result<number, string> =>
         n > 0 ? Result.ok(n * 2) : Result.err(`non-positive: ${n}`);
 
+      const nonCurriedItemsFirst = result.traverse([1, 2, 3], (n) => checkPositive(n));
+      expectTypeOf(nonCurriedItemsFirst).toEqualTypeOf<Result<number[], string>>();
+      expect(nonCurriedItemsFirst).toEqual(Result.ok([2, 4, 6]));
+
       const allValid = result.traverse(checkPositive, [1, 2, 3]);
       expectTypeOf(allValid).toEqualTypeOf<Result<number[], string>>();
       expect(allValid).toEqual(Result.ok([2, 4, 6]));
 
-      const curried = Result.traverse(checkPositive);
-      expect(curried(new Set([2, 3]))).toEqual(Result.ok([4, 6]));
-      expect(curried([1, -1, 3])).toEqual(Result.err('non-positive: -1'));
+      const curriedFn = Result.traverse(checkPositive);
+      expect(curriedFn(new Set([2, 3]))).toEqual(Result.ok([4, 6]));
+      expect(curriedFn([1, -1, 3])).toEqual(Result.err('non-positive: -1'));
+
+      const curriedItems = Result.traverse([2, 3]);
+      expect(curriedItems(checkPositive)).toEqual(Result.ok([4, 6]));
 
       let visited = 0;
       function* numbers() {
@@ -1770,7 +1777,7 @@ describe('`Result` method tests', () => {
         yield 3;
       }
 
-      const shortCircuited = result.traverse(checkPositive, numbers());
+      const shortCircuited = result.traverse(numbers(), checkPositive);
       expect(shortCircuited).toEqual(Result.err('non-positive: -2'));
       expect(visited).toBe(2);
     });

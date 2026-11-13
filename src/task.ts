@@ -2806,11 +2806,19 @@ export function zipWith<T, E, U, F, V>(
   @template T The type of items in the input iterable.
   @template U The type of resolved values inside the resulting `Task`.
   @template E The type of rejection reason inside the resulting `Task`.
-  @param fn A function mapping each item to a `Task`.
   @param items Any `Iterable` or `AsyncIterable` of items to traverse.
+  @param fn A function mapping each item to a `Task`.
   @returns A `Task` resolving to an array of resolved values if all tasks
            resolve, or rejecting with the first rejection encountered.
  */
+export function traverse<T, U, E>(
+  items: Iterable<T> | AsyncIterable<T>,
+  fn: (item: T) => Task<U, E> | Result<U, E>
+): Task<U[], E>;
+export function traverse<T, R extends AnyTask | AnyResult>(
+  items: Iterable<T> | AsyncIterable<T>,
+  fn: (item: T) => R
+): Task<Array<ResolvesTo<R>>, RejectsWith<R>>;
 export function traverse<T, U, E>(
   fn: (item: T) => Task<U, E> | Result<U, E>,
   items: Iterable<T> | AsyncIterable<T>
@@ -2825,11 +2833,21 @@ export function traverse<T, U, E>(
 export function traverse<T, R extends AnyTask | AnyResult>(
   fn: (item: T) => R
 ): (items: Iterable<T> | AsyncIterable<T>) => Task<Array<ResolvesTo<R>>, RejectsWith<R>>;
+export function traverse<T>(items: Iterable<T> | AsyncIterable<T>): {
+  <U, E>(fn: (item: T) => Task<U, E> | Result<U, E>): Task<U[], E>;
+  <R extends AnyTask | AnyResult>(fn: (item: T) => R): Task<Array<ResolvesTo<R>>, RejectsWith<R>>;
+};
 export function traverse<T, U, E>(
-  fn: (item: T) => Task<U, E> | Result<U, E>,
-  items?: Iterable<T> | AsyncIterable<T>
-): Task<U[], E> | ((items: Iterable<T> | AsyncIterable<T>) => Task<U[], E>) {
-  const op = (iterable: Iterable<T> | AsyncIterable<T>): Task<U[], E> =>
+  itemsOrFn: Iterable<T> | AsyncIterable<T> | ((item: T) => Task<U, E> | Result<U, E>),
+  fnOrItems?: ((item: T) => Task<U, E> | Result<U, E>) | Iterable<T> | AsyncIterable<T>
+):
+  | Task<U[], E>
+  | ((items: Iterable<T> | AsyncIterable<T>) => Task<U[], E>)
+  | ((fn: (item: T) => Task<U, E> | Result<U, E>) => Task<U[], E>) {
+  const run = (
+    iterable: Iterable<T> | AsyncIterable<T>,
+    mapper: (item: T) => Task<U, E> | Result<U, E>
+  ): Task<U[], E> =>
     new Task((resolve, reject) => {
       (async () => {
         const values: U[] = [];
@@ -2844,7 +2862,7 @@ export function traverse<T, U, E>(
             break;
           }
 
-          const res = await fn(step.value);
+          const res = await mapper(step.value);
           if (res.isErr) {
             reject(res.error);
             return;
@@ -2857,7 +2875,17 @@ export function traverse<T, U, E>(
       })();
     });
 
-  return curry1(op, items);
+  if (typeof itemsOrFn === 'function') {
+    return curry1(
+      (iterable: Iterable<T> | AsyncIterable<T>) => run(iterable, itemsOrFn),
+      fnOrItems as Iterable<T> | AsyncIterable<T> | undefined
+    );
+  }
+
+  return curry1(
+    (mapper: (item: T) => Task<U, E> | Result<U, E>) => run(itemsOrFn, mapper),
+    fnOrItems as ((item: T) => Task<U, E> | Result<U, E>) | undefined
+  );
 }
 
 /**

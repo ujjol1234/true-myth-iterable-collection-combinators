@@ -1947,11 +1947,19 @@ export function zipWith<T extends {}, U extends {}, V extends {}>(
 
   @template T The type of items in the input iterable.
   @template U The type of values inside the resulting `Maybe`.
-  @param fn A function mapping each item to a `Maybe`.
   @param items Any iterable of items to traverse.
+  @param fn A function mapping each item to a `Maybe`.
   @returns `Just` an array of unwrapped values if all mapped items are `Just`,
            or `Nothing` upon the first `Nothing`.
  */
+export function traverse<T, U extends {}>(
+  items: Iterable<T>,
+  fn: (item: T) => Maybe<U>
+): Maybe<U[]>;
+export function traverse<T, R extends AnyMaybe>(
+  items: Iterable<T>,
+  fn: (item: T) => R
+): Maybe<Array<ValueFor<R>>>;
 export function traverse<T, U extends {}>(
   fn: (item: T) => Maybe<U>,
   items: Iterable<T>
@@ -1966,11 +1974,15 @@ export function traverse<T, U extends {}>(
 export function traverse<T, R extends AnyMaybe>(
   fn: (item: T) => R
 ): (items: Iterable<T>) => Maybe<Array<ValueFor<R>>>;
+export function traverse<T>(items: Iterable<T>): {
+  <U extends {}>(fn: (item: T) => Maybe<U>): Maybe<U[]>;
+  <R extends AnyMaybe>(fn: (item: T) => R): Maybe<Array<ValueFor<R>>>;
+};
 export function traverse<T, U extends {}>(
-  fn: (item: T) => Maybe<U>,
-  items?: Iterable<T>
-): Maybe<U[]> | ((items: Iterable<T>) => Maybe<U[]>) {
-  const op = (iterable: Iterable<T>): Maybe<U[]> => {
+  itemsOrFn: Iterable<T> | ((item: T) => Maybe<U>),
+  fnOrItems?: ((item: T) => Maybe<U>) | Iterable<T>
+): Maybe<U[]> | ((items: Iterable<T>) => Maybe<U[]>) | ((fn: (item: T) => Maybe<U>) => Maybe<U[]>) {
+  const run = (iterable: Iterable<T>, mapper: (item: T) => Maybe<U>): Maybe<U[]> => {
     const values: U[] = [];
     const iterator = iterable[Symbol.iterator]();
     while (true) {
@@ -1979,7 +1991,7 @@ export function traverse<T, U extends {}>(
         break;
       }
 
-      const mapped = fn(step.value);
+      const mapped = mapper(step.value);
       if (mapped.isNothing) {
         return nothing();
       }
@@ -1990,7 +2002,17 @@ export function traverse<T, U extends {}>(
     return just(values);
   };
 
-  return curry1(op, items);
+  if (typeof itemsOrFn === 'function') {
+    return curry1(
+      (iterable: Iterable<T>) => run(iterable, itemsOrFn),
+      fnOrItems as Iterable<T> | undefined
+    );
+  }
+
+  return curry1(
+    (mapper: (item: T) => Maybe<U>) => run(itemsOrFn, mapper),
+    fnOrItems as ((item: T) => Maybe<U>) | undefined
+  );
 }
 
 /**

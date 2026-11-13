@@ -1586,13 +1586,20 @@ describe('`Maybe` class', () => {
       const parsePositive = (n: number): Maybe<number> =>
         n > 0 ? Maybe.just(n * 2) : Maybe.nothing();
 
+      const nonCurriedItemsFirst = maybe.traverse([1, 2, 3], (n) => parsePositive(n));
+      expectTypeOf(nonCurriedItemsFirst).toEqualTypeOf<Maybe<number[]>>();
+      expect(nonCurriedItemsFirst).toEqual(Maybe.just([2, 4, 6]));
+
       const allValid = maybe.traverse(parsePositive, [1, 2, 3]);
       expectTypeOf(allValid).toEqualTypeOf<Maybe<number[]>>();
       expect(allValid).toEqual(Maybe.just([2, 4, 6]));
 
-      const curried = Maybe.traverse(parsePositive);
-      expect(curried(new Set([2, 3]))).toEqual(Maybe.just([4, 6]));
-      expect(curried([1, -1, 3])).toEqual(Maybe.nothing());
+      const curriedFn = Maybe.traverse(parsePositive);
+      expect(curriedFn(new Set([2, 3]))).toEqual(Maybe.just([4, 6]));
+      expect(curriedFn([1, -1, 3])).toEqual(Maybe.nothing());
+
+      const curriedItems = Maybe.traverse([2, 3]);
+      expect(curriedItems(parsePositive)).toEqual(Maybe.just([4, 6]));
 
       let visited = 0;
       function* numbers() {
@@ -1604,7 +1611,7 @@ describe('`Maybe` class', () => {
         yield 3;
       }
 
-      const shortCircuited = maybe.traverse(parsePositive, numbers());
+      const shortCircuited = maybe.traverse(numbers(), parsePositive);
       expect(shortCircuited).toEqual(Maybe.nothing());
       expect(visited).toBe(2);
     });

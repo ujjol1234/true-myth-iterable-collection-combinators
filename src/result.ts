@@ -2125,11 +2125,19 @@ export function zipWith<T, E, U, F, V>(
   @template T The type of items in the input iterable.
   @template U The type of `Ok` values inside the resulting `Result`.
   @template E The type of `Err` value inside the resulting `Result`.
-  @param fn A function mapping each item to a `Result`.
   @param items Any iterable of items to traverse.
+  @param fn A function mapping each item to a `Result`.
   @returns `Ok` an array of unwrapped values if all mapped items are `Ok`,
            or the first `Err` encountered.
  */
+export function traverse<T, U, E>(
+  items: Iterable<T>,
+  fn: (item: T) => Result<U, E>
+): Result<U[], E>;
+export function traverse<T, R extends AnyResult>(
+  items: Iterable<T>,
+  fn: (item: T) => R
+): Result<Array<OkFor<R>>, ErrFor<R>>;
 export function traverse<T, U, E>(
   fn: (item: T) => Result<U, E>,
   items: Iterable<T>
@@ -2144,11 +2152,18 @@ export function traverse<T, U, E>(
 export function traverse<T, R extends AnyResult>(
   fn: (item: T) => R
 ): (items: Iterable<T>) => Result<Array<OkFor<R>>, ErrFor<R>>;
+export function traverse<T>(items: Iterable<T>): {
+  <U, E>(fn: (item: T) => Result<U, E>): Result<U[], E>;
+  <R extends AnyResult>(fn: (item: T) => R): Result<Array<OkFor<R>>, ErrFor<R>>;
+};
 export function traverse<T, U, E>(
-  fn: (item: T) => Result<U, E>,
-  items?: Iterable<T>
-): Result<U[], E> | ((items: Iterable<T>) => Result<U[], E>) {
-  const op = (iterable: Iterable<T>): Result<U[], E> => {
+  itemsOrFn: Iterable<T> | ((item: T) => Result<U, E>),
+  fnOrItems?: ((item: T) => Result<U, E>) | Iterable<T>
+):
+  | Result<U[], E>
+  | ((items: Iterable<T>) => Result<U[], E>)
+  | ((fn: (item: T) => Result<U, E>) => Result<U[], E>) {
+  const run = (iterable: Iterable<T>, mapper: (item: T) => Result<U, E>): Result<U[], E> => {
     const values: U[] = [];
     const iterator = iterable[Symbol.iterator]();
     while (true) {
@@ -2157,7 +2172,7 @@ export function traverse<T, U, E>(
         break;
       }
 
-      const mapped = fn(step.value);
+      const mapped = mapper(step.value);
       if (mapped.isErr) {
         return (mapped as Err<U, E>).cast();
       }
@@ -2168,7 +2183,17 @@ export function traverse<T, U, E>(
     return Result.ok(values);
   };
 
-  return curry1(op, items);
+  if (typeof itemsOrFn === 'function') {
+    return curry1(
+      (iterable: Iterable<T>) => run(iterable, itemsOrFn),
+      fnOrItems as Iterable<T> | undefined
+    );
+  }
+
+  return curry1(
+    (mapper: (item: T) => Result<U, E>) => run(itemsOrFn, mapper),
+    fnOrItems as ((item: T) => Result<U, E>) | undefined
+  );
 }
 
 /**
