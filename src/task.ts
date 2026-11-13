@@ -78,6 +78,10 @@ class TaskImpl<T, E> implements PromiseLike<Result<T, E>>, AsyncIterable<Result<
   static sequence: typeof sequence;
   static traverse: typeof traverse;
   static traverseSerial: typeof traverseSerial;
+  static tap: typeof tap;
+  static tapRejected: typeof tapRejected;
+  static retryN: typeof retryN;
+  static retry: typeof retryN;
 
   readonly #promise: Promise<Result<T, E>>;
   #state: Repr<T, E> = [State.Pending];
@@ -418,6 +422,28 @@ class TaskImpl<T, E> implements PromiseLike<Result<T, E>>, AsyncIterable<Result<
    */
   inspectRejected(fn: (error: E) => void): Task<T, E> {
     return fromUnsafePromise(this.#promise.then(result.inspectErr(fn)));
+  }
+
+  /**
+    Run a side effect with the resolved value without modifying the
+    {@linkcode Task}, passing the value through unchanged.
+
+    @param fn The function to call with the resolved value.
+    @returns The original `Task`, unchanged.
+   */
+  tap(fn: (value: T) => void): Task<T, E> {
+    return this.inspect(fn);
+  }
+
+  /**
+    Run a side effect with the rejection reason without modifying the
+    {@linkcode Task}, passing the rejection through unchanged.
+
+    @param fn The function to call with the rejection reason.
+    @returns The original `Task`, unchanged.
+   */
+  tapRejected(fn: (error: E) => void): Task<T, E> {
+    return this.inspectRejected(fn);
   }
 
   /**
@@ -1596,6 +1622,10 @@ export interface TaskConstructor {
   sequence: typeof sequence;
   traverse: typeof traverse;
   traverseSerial: typeof traverseSerial;
+  tap: typeof tap;
+  tapRejected: typeof tapRejected;
+  retryN: typeof retryN;
+  retry: typeof retryN;
 }
 
 // Duplicate documentation because it will show up more nicely when rendered in
@@ -2962,11 +2992,110 @@ export function sequence<T, E>(tasks: Iterable<Task<T, E>>): Task<T[], E> {
   return traverse(tasks, identity);
 }
 
+/**
+  Run a side effect with the resolved value of a {@linkcode Task} and pass the
+  `Task` through unchanged.
+
+  @template T The type of the value when the `Task` resolves successfully.
+  @template E The type of the rejection reason when the `Task` rejects.
+  @param task The `Task` to tap.
+  @param fn The side-effect function to call if the `Task` resolves.
+  @returns A `Task` with the same resolution or rejection as `task`.
+ */
+export function tap<T, E>(task: Task<T, E>, fn: (value: T) => void): Task<T, E>;
+export function tap<T, E>(fn: (value: T) => void, task: Task<T, E>): Task<T, E>;
+export function tap<T, E>(fn: (value: T) => void): (task: Task<T, E>) => Task<T, E>;
+export function tap<T, E>(task: Task<T, E>): (fn: (value: T) => void) => Task<T, E>;
+export function tap<T, E>(
+  taskOrFn: Task<T, E> | ((value: T) => void),
+  fnOrTask?: ((value: T) => void) | Task<T, E>
+): Task<T, E> | ((task: Task<T, E>) => Task<T, E>) | ((fn: (value: T) => void) => Task<T, E>) {
+  if (typeof taskOrFn === 'function') {
+    return curry1((t: Task<T, E>) => t.tap(taskOrFn), fnOrTask as Task<T, E> | undefined);
+  }
+
+  return curry1(
+    (f: (value: T) => void) => taskOrFn.tap(f),
+    fnOrTask as ((value: T) => void) | undefined
+  );
+}
+
+/**
+  Run a side effect with the rejection reason of a {@linkcode Task} and pass
+  the `Task` through unchanged.
+
+  @template T The type of the value when the `Task` resolves successfully.
+  @template E The type of the rejection reason when the `Task` rejects.
+  @param task The `Task` to tap on rejection.
+  @param fn The side-effect function to call if the `Task` rejects.
+  @returns A `Task` with the same resolution or rejection as `task`.
+ */
+export function tapRejected<T, E>(task: Task<T, E>, fn: (error: E) => void): Task<T, E>;
+export function tapRejected<T, E>(fn: (error: E) => void, task: Task<T, E>): Task<T, E>;
+export function tapRejected<T, E>(fn: (error: E) => void): (task: Task<T, E>) => Task<T, E>;
+export function tapRejected<T, E>(task: Task<T, E>): (fn: (error: E) => void) => Task<T, E>;
+export function tapRejected<T, E>(
+  taskOrFn: Task<T, E> | ((error: E) => void),
+  fnOrTask?: ((error: E) => void) | Task<T, E>
+): Task<T, E> | ((task: Task<T, E>) => Task<T, E>) | ((fn: (error: E) => void) => Task<T, E>) {
+  if (typeof taskOrFn === 'function') {
+    return curry1((t: Task<T, E>) => t.tapRejected(taskOrFn), fnOrTask as Task<T, E> | undefined);
+  }
+
+  return curry1(
+    (f: (error: E) => void) => taskOrFn.tapRejected(f),
+    fnOrTask as ((error: E) => void) | undefined
+  );
+}
+
+/**
+  Retry a {@linkcode Task}-producing function up to `n` times on rejection.
+
+  The function `fn` is called initially; if the resulting `Task` rejects and
+  `n > 0`, `fn` is retried up to `n` additional times (up to `n + 1` total
+  attempts). Resolves as soon as an attempt resolves, or rejects with the last
+  rejection reason if all attempts reject.
+
+  @template T The type of the resolved value.
+  @template E The type of the rejection reason.
+  @param n The maximum number of retries on rejection.
+  @param fn A function producing the `Task` to attempt.
+  @returns A `Task` that resolves with the first successful attempt or rejects
+           with the final rejection reason.
+ */
+export function retryN<T, E>(n: number, fn: () => Task<T, E>): Task<T, E>;
+export function retryN<R extends AnyTask>(
+  n: number,
+  fn: () => R
+): Task<ResolvesTo<R>, RejectsWith<R>>;
+export function retryN(n: number): {
+  <T, E>(fn: () => Task<T, E>): Task<T, E>;
+  <R extends AnyTask>(fn: () => R): Task<ResolvesTo<R>, RejectsWith<R>>;
+};
+export function retryN<T, E>(
+  n: number,
+  fn?: () => Task<T, E>
+): Task<T, E> | ((fn: () => Task<T, E>) => Task<T, E>) {
+  const op = (taskFn: () => Task<T, E>): Task<T, E> => {
+    const attempt = (remaining: number): Task<T, E> =>
+      taskFn().orElse((err) => (remaining > 0 ? attempt(remaining - 1) : Task.reject(err)));
+    return attempt(n);
+  };
+
+  return curry1(op, fn);
+}
+
+export const retry = retryN;
+
 TaskImpl.zip = zip;
 TaskImpl.zipWith = zipWith;
 TaskImpl.sequence = sequence;
 TaskImpl.traverse = traverse;
 TaskImpl.traverseSerial = traverseSerial;
+TaskImpl.tap = tap;
+TaskImpl.tapRejected = tapRejected;
+TaskImpl.retryN = retryN;
+TaskImpl.retry = retryN;
 
 /**
   Execute a callback that produces either a {@linkcode Task} or the “sentinel”

@@ -47,6 +47,9 @@ import Task, {
   sequence,
   traverse,
   traverseSerial,
+  tap,
+  tapRejected,
+  retryN,
 } from 'true-myth/task';
 import {
   exponential,
@@ -3926,14 +3929,7 @@ describe('module-scope functions', () => {
       // Only the first task has started initially
       expect(events).toEqual(['start:1']);
       expect(await serialTask).toEqual(Result.ok([10, 20, 30]));
-      expect(events).toEqual([
-        'start:1',
-        'finish:1',
-        'start:2',
-        'finish:2',
-        'start:3',
-        'finish:3',
-      ]);
+      expect(events).toEqual(['start:1', 'finish:1', 'start:2', 'finish:2', 'start:3', 'finish:3']);
 
       const processItem = (n: number): Task<number, string> =>
         n > 0 ? Task.resolve(n * 2) : Task.reject(`bad: ${n}`);
@@ -3959,6 +3955,102 @@ describe('module-scope functions', () => {
 
       expect(await Task.traverseSerial(syncNumbers(), processItem)).toEqual(Result.err('bad: -2'));
       expect(syncVisited).toBe(2);
+    });
+  });
+
+  describe('`tap`, `tapRejected`, and `retryN`', () => {
+    test('`tap` runs side effect on resolved task and passes value through unchanged', async () => {
+      const seen: number[] = [];
+      const record = (n: number) => {
+        seen.push(n);
+      };
+
+      const resolvedTask = Task.resolve<number, string>(42);
+      const rejectedTask = Task.reject<number, string>('fail');
+
+      const viaMethod = resolvedTask.tap(record);
+      expectTypeOf(viaMethod).toEqualTypeOf<Task<number, string>>();
+      expect(await viaMethod).toEqual(Result.ok(42));
+      expect(seen).toEqual([42]);
+
+      expect(await rejectedTask.tap(record)).toEqual(Result.err('fail'));
+      expect(seen).toEqual([42]);
+
+      expect(await Task.tap(resolvedTask, record)).toEqual(Result.ok(42));
+      expect(await tap(record, resolvedTask)).toEqual(Result.ok(42));
+
+      const curriedFn = Task.tap<number, string>(record);
+      expectTypeOf(curriedFn).toEqualTypeOf<(task: Task<number, string>) => Task<number, string>>();
+      expect(await curriedFn(resolvedTask)).toEqual(Result.ok(42));
+      expect(await curriedFn(rejectedTask)).toEqual(Result.err('fail'));
+
+      const curriedTask = tap(resolvedTask);
+      expect(await curriedTask(record)).toEqual(Result.ok(42));
+      expect(seen).toEqual([42, 42, 42, 42, 42]);
+    });
+
+    test('`tapRejected` runs side effect on rejected task and passes rejection through unchanged', async () => {
+      const seenErrors: string[] = [];
+      const recordError = (e: string) => {
+        seenErrors.push(e);
+      };
+
+      const resolvedTask = Task.resolve<number, string>(42);
+      const rejectedTask = Task.reject<number, string>('boom');
+
+      const viaMethod = rejectedTask.tapRejected(recordError);
+      expectTypeOf(viaMethod).toEqualTypeOf<Task<number, string>>();
+      expect(await viaMethod).toEqual(Result.err('boom'));
+      expect(seenErrors).toEqual(['boom']);
+
+      expect(await resolvedTask.tapRejected(recordError)).toEqual(Result.ok(42));
+      expect(seenErrors).toEqual(['boom']);
+
+      expect(await Task.tapRejected(rejectedTask, recordError)).toEqual(Result.err('boom'));
+      expect(await tapRejected(recordError, rejectedTask)).toEqual(Result.err('boom'));
+
+      const curriedFn = Task.tapRejected<number, string>(recordError);
+      expectTypeOf(curriedFn).toEqualTypeOf<(task: Task<number, string>) => Task<number, string>>();
+      expect(await curriedFn(rejectedTask)).toEqual(Result.err('boom'));
+      expect(await curriedFn(resolvedTask)).toEqual(Result.ok(42));
+
+      const curriedTask = tapRejected(rejectedTask);
+      expect(await curriedTask(recordError)).toEqual(Result.err('boom'));
+      expect(seenErrors).toEqual(['boom', 'boom', 'boom', 'boom', 'boom']);
+    });
+
+    test('`retryN` retries a task-producing function up to `n` times on rejection', async () => {
+      let attempts = 0;
+      const succeedOnThird = (): Task<string, string> => {
+        attempts += 1;
+        return attempts < 3 ? Task.reject(`fail #${attempts}`) : Task.resolve('success!');
+      };
+
+      const resolved = Task.retryN(2, succeedOnThird);
+      expectTypeOf(resolved).toEqualTypeOf<Task<string, string>>();
+      expect(await resolved).toEqual(Result.ok('success!'));
+      expect(attempts).toBe(3);
+
+      let failAttempts = 0;
+      const alwaysFail = (): Task<number, string> => {
+        failAttempts += 1;
+        return Task.reject(`err-${failAttempts}`);
+      };
+
+      const exhausted = retryN(2, alwaysFail);
+      expectTypeOf(exhausted).toEqualTypeOf<Task<number, string>>();
+      expect(await exhausted).toEqual(Result.err('err-3'));
+      expect(failAttempts).toBe(3);
+
+      let curriedAttempts = 0;
+      const curriedRetry = Task.retryN(1);
+      const fromCurried = curriedRetry((): Task<number, string> => {
+        curriedAttempts += 1;
+        return curriedAttempts === 1 ? Task.reject('first') : Task.resolve(99);
+      });
+      expectTypeOf(fromCurried).toEqualTypeOf<Task<number, string>>();
+      expect(await fromCurried).toEqual(Result.ok(99));
+      expect(curriedAttempts).toBe(2);
     });
   });
 });
