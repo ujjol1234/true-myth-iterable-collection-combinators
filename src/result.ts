@@ -79,6 +79,7 @@ class ResultImpl<T, E> implements Iterable<T> {
   static zipWith: typeof zipWith;
   static sequence: typeof sequence;
   static traverse: typeof traverse;
+  static partition: typeof partition;
 
   private constructor(private repr: Repr<T, E>) {}
 
@@ -2215,10 +2216,45 @@ export function sequence<T, E>(results: Iterable<Result<T, E>>): Result<T[], E> 
   return traverse(identity, results);
 }
 
+/**
+  Split an iterable of {@linkcode Result} instances into a tuple of two arrays:
+  all unwrapped {@linkcode Ok} values first, and all unwrapped {@linkcode Err}
+  reasons second (`[oks, errs]`).
+
+  @template T The type of the wrapped `Ok` values.
+  @template E The type of the wrapped `Err` values.
+  @param results Any iterable of `Result` instances.
+  @returns A tuple `[oks, errs]` containing all `Ok` values and all `Err` values.
+ */
+export function partition<T = never, E = never>(results: Iterable<Result<T, E>>): [T[], E[]];
+export function partition<R extends AnyResult>(
+  results: Iterable<R>
+): [Array<OkFor<R>>, Array<ErrFor<R>>];
+export function partition<T, E>(results: Iterable<Result<T, E>>): [T[], E[]] {
+  const oks: T[] = [];
+  const errs: E[] = [];
+  const iterator = results[Symbol.iterator]();
+  while (true) {
+    const step = iterator.next();
+    if (step.done) {
+      break;
+    }
+
+    if (step.value.isOk) {
+      oks.push(step.value.value);
+    } else {
+      errs.push((step.value as Err<T, E>).error);
+    }
+  }
+
+  return [oks, errs];
+}
+
 ResultImpl.zip = zip;
 ResultImpl.zipWith = zipWith;
 ResultImpl.sequence = sequence;
 ResultImpl.traverse = traverse;
+ResultImpl.partition = partition;
 
 /**
   The public interface for the {@linkcode Result} class *as a value*: the static
@@ -2231,6 +2267,7 @@ export interface ResultConstructor {
   zipWith: typeof zipWith;
   sequence: typeof sequence;
   traverse: typeof traverse;
+  partition: typeof partition;
 }
 
 // Duplicate documentation because it will show up more nicely when rendered in

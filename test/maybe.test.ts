@@ -1616,4 +1616,71 @@ describe('`Maybe` class', () => {
       expect(visited).toBe(2);
     });
   });
+
+  describe('`compact`, `filterMap`, and `firstJust`', () => {
+    test('`compact` unwraps `Just` values and silently drops `Nothing`', () => {
+      const empty = Maybe.compact([]);
+      expectTypeOf(empty).toEqualTypeOf<never[]>();
+      expect(empty).toEqual([]);
+
+      const mixed = maybe.compact([
+        Maybe.just(1),
+        Maybe.nothing<number>(),
+        Maybe.just(2),
+        Maybe.nothing<number>(),
+        Maybe.just(3),
+      ]);
+      expectTypeOf(mixed).toEqualTypeOf<number[]>();
+      expect(mixed).toEqual([1, 2, 3]);
+
+      const fromSet = Maybe.compact(new Set([Maybe.just('a'), Maybe.nothing<string>()]));
+      expectTypeOf(fromSet).toEqualTypeOf<string[]>();
+      expect(fromSet).toEqual(['a']);
+    });
+
+    test('`filterMap` maps items, unwraps `Just`, drops `Nothing`, and supports currying', () => {
+      const parseEven = (n: number): Maybe<string> =>
+        n % 2 === 0 ? Maybe.just(`even:${n}`) : Maybe.nothing();
+
+      const itemsFirst = Maybe.filterMap([1, 2, 3, 4], (n) => parseEven(n));
+      expectTypeOf(itemsFirst).toEqualTypeOf<string[]>();
+      expect(itemsFirst).toEqual(['even:2', 'even:4']);
+
+      const fnFirst = maybe.filterMap(parseEven, [1, 2, 3, 4]);
+      expectTypeOf(fnFirst).toEqualTypeOf<string[]>();
+      expect(fnFirst).toEqual(['even:2', 'even:4']);
+
+      const curriedFn = Maybe.filterMap(parseEven);
+      expect(curriedFn(new Set([2, 3, 6]))).toEqual(['even:2', 'even:6']);
+      expect(curriedFn([1, 3, 5])).toEqual([]);
+
+      const curriedItems = maybe.filterMap([2, 3, 6]);
+      expect(curriedItems(parseEven)).toEqual(['even:2', 'even:6']);
+    });
+
+    test('`firstJust` returns the first `Just` or `Nothing` and stops advancing early', () => {
+      const empty = Maybe.firstJust([]);
+      expectTypeOf(empty).toEqualTypeOf<Maybe<never>>();
+      expect(empty).toEqual(Maybe.nothing());
+
+      const allNothing = maybe.firstJust([Maybe.nothing<number>(), Maybe.nothing<number>()]);
+      expectTypeOf(allNothing).toEqualTypeOf<Maybe<number>>();
+      expect(allNothing).toEqual(Maybe.nothing());
+
+      let steps = 0;
+      function* gen(): IterableIterator<Maybe<string>> {
+        steps += 1;
+        yield Maybe.nothing();
+        steps += 1;
+        yield Maybe.just('first');
+        steps += 1;
+        yield Maybe.just('second');
+      }
+
+      const found = Maybe.firstJust(gen());
+      expectTypeOf(found).toEqualTypeOf<Maybe<string>>();
+      expect(found).toEqual(Maybe.just('first'));
+      expect(steps).toBe(2);
+    });
+  });
 });

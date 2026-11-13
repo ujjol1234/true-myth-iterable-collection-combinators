@@ -1781,5 +1781,32 @@ describe('`Result` method tests', () => {
       expect(shortCircuited).toEqual(Result.err('non-positive: -2'));
       expect(visited).toBe(2);
     });
+
+    test('`partition` splits an iterable of `Result`s into `[oks, errs]`', () => {
+      const empty = Result.partition([]);
+      expectTypeOf(empty).toEqualTypeOf<[never[], never[]]>();
+      expect(empty).toEqual([[], []]);
+
+      const items: Array<Result<number, string>> = [
+        Result.ok(1),
+        Result.err('bad 1'),
+        Result.ok(2),
+        Result.err('bad 2'),
+        Result.ok(3),
+      ];
+
+      const partitioned = result.partition(items);
+      expectTypeOf(partitioned).toEqualTypeOf<[number[], string[]]>();
+      expect(partitioned).toEqual([
+        [1, 2, 3],
+        ['bad 1', 'bad 2'],
+      ]);
+
+      const fromSet = Result.partition(
+        new Set<Result<string, number>>([Result.ok('a'), Result.err(404)])
+      );
+      expectTypeOf(fromSet).toEqualTypeOf<[string[], number[]]>();
+      expect(fromSet).toEqual([['a'], [404]]);
+    });
   });
 });

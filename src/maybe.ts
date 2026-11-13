@@ -69,6 +69,9 @@ class MaybeImpl<T extends {}> implements SomeMaybe<T>, Iterable<T> {
   static zipWith: typeof zipWith;
   static sequence: typeof sequence;
   static traverse: typeof traverse;
+  static compact: typeof compact;
+  static filterMap: typeof filterMap;
+  static firstJust: typeof firstJust;
 
   // SAFETY: this is definitely assigned in the constructor for every *actual*
   // instance, but TS cannot see that: it is only set for `Nothing` instances
@@ -2031,10 +2034,118 @@ export function sequence<T extends {}>(maybes: Iterable<Maybe<T>>): Maybe<T[]> {
   return traverse(identity, maybes);
 }
 
+/**
+  Map each element of an iterable to a {@linkcode Maybe} and collect the
+  unwrapped values of all {@linkcode Just} results into an array, silently
+  dropping any {@linkcode Nothing} results.
+
+  @template T The type of items in the input iterable.
+  @template U The type of unwrapped values in the returned array.
+  @param items Any iterable of items to filter and map.
+  @param fn A function mapping each item to a `Maybe`.
+  @returns An array of unwrapped `Just` values.
+ */
+export function filterMap<T, U extends {}>(items: Iterable<T>, fn: (item: T) => Maybe<U>): U[];
+export function filterMap<T, R extends AnyMaybe>(
+  items: Iterable<T>,
+  fn: (item: T) => R
+): Array<ValueFor<R>>;
+export function filterMap<T, U extends {}>(fn: (item: T) => Maybe<U>, items: Iterable<T>): U[];
+export function filterMap<T, R extends AnyMaybe>(
+  fn: (item: T) => R,
+  items: Iterable<T>
+): Array<ValueFor<R>>;
+export function filterMap<T, U extends {}>(fn: (item: T) => Maybe<U>): (items: Iterable<T>) => U[];
+export function filterMap<T, R extends AnyMaybe>(
+  fn: (item: T) => R
+): (items: Iterable<T>) => Array<ValueFor<R>>;
+export function filterMap<T>(items: Iterable<T>): {
+  <U extends {}>(fn: (item: T) => Maybe<U>): U[];
+  <R extends AnyMaybe>(fn: (item: T) => R): Array<ValueFor<R>>;
+};
+export function filterMap<T, U extends {}>(
+  itemsOrFn: Iterable<T> | ((item: T) => Maybe<U>),
+  fnOrItems?: ((item: T) => Maybe<U>) | Iterable<T>
+): U[] | ((items: Iterable<T>) => U[]) | ((fn: (item: T) => Maybe<U>) => U[]) {
+  const run = (iterable: Iterable<T>, mapper: (item: T) => Maybe<U>): U[] => {
+    const values: U[] = [];
+    const iterator = iterable[Symbol.iterator]();
+    while (true) {
+      const step = iterator.next();
+      if (step.done) {
+        break;
+      }
+
+      const mapped = mapper(step.value);
+      if (mapped.isJust) {
+        values.push(mapped.value);
+      }
+    }
+
+    return values;
+  };
+
+  if (typeof itemsOrFn === 'function') {
+    return curry1(
+      (iterable: Iterable<T>) => run(iterable, itemsOrFn),
+      fnOrItems as Iterable<T> | undefined
+    );
+  }
+
+  return curry1(
+    (mapper: (item: T) => Maybe<U>) => run(itemsOrFn, mapper),
+    fnOrItems as ((item: T) => Maybe<U>) | undefined
+  );
+}
+
+/**
+  Unwrap all {@linkcode Just} values from an iterable of {@linkcode Maybe}
+  instances into an array, silently dropping any {@linkcode Nothing} instances.
+
+  @template T The type of the wrapped values.
+  @param maybes Any iterable of `Maybe` instances.
+  @returns An array of unwrapped `Just` values.
+ */
+export function compact<T extends {} = never>(maybes: Iterable<Maybe<T>>): T[];
+export function compact<R extends AnyMaybe>(maybes: Iterable<R>): Array<ValueFor<R>>;
+export function compact<T extends {}>(maybes: Iterable<Maybe<T>>): T[] {
+  return filterMap(maybes, identity);
+}
+
+/**
+  Return the first {@linkcode Just} in an iterable of {@linkcode Maybe}
+  instances, or {@linkcode Nothing} if none exists.
+
+  @template T The type of the wrapped values.
+  @param maybes Any iterable of `Maybe` instances.
+  @returns The first `Just` encountered, or `Nothing` if all elements are
+           `Nothing` or the iterable is empty.
+ */
+export function firstJust<T extends {} = never>(maybes: Iterable<Maybe<T>>): Maybe<T>;
+export function firstJust<R extends AnyMaybe>(maybes: Iterable<R>): Maybe<ValueFor<R>>;
+export function firstJust<T extends {}>(maybes: Iterable<Maybe<T>>): Maybe<T> {
+  const iterator = maybes[Symbol.iterator]();
+  while (true) {
+    const step = iterator.next();
+    if (step.done) {
+      break;
+    }
+
+    if (step.value.isJust) {
+      return step.value;
+    }
+  }
+
+  return nothing();
+}
+
 MaybeImpl.zip = zip;
 MaybeImpl.zipWith = zipWith;
 MaybeImpl.sequence = sequence;
 MaybeImpl.traverse = traverse;
+MaybeImpl.compact = compact;
+MaybeImpl.filterMap = filterMap;
+MaybeImpl.firstJust = firstJust;
 
 /**
   The public interface for the {@linkcode Maybe} class *as a value*: a
@@ -2049,6 +2160,9 @@ export interface MaybeConstructor {
   zipWith: typeof zipWith;
   sequence: typeof sequence;
   traverse: typeof traverse;
+  compact: typeof compact;
+  filterMap: typeof filterMap;
+  firstJust: typeof firstJust;
 }
 
 // Duplicate documentation because it will show up more nicely when rendered in
