@@ -42,6 +42,11 @@ import Task, {
   stopRetrying,
   isRetryFailed,
   flatten,
+  zip,
+  zipWith,
+  sequence,
+  traverse,
+  traverseSerial,
 } from 'true-myth/task';
 import {
   exponential,
@@ -3813,7 +3818,7 @@ describe('module-scope functions', () => {
       expect(await taskNum.zip(Result.err('err-res'))).toEqual(Result.err('err-res'));
 
       expect(await Task.zip(taskNum, taskStr)).toEqual(Result.ok([1, 'a']));
-      expect(await Task.zip(taskNum)(taskStr)).toEqual(Result.ok([1, 'a']));
+      expect(await zip(taskNum)(taskStr)).toEqual(Result.ok([1, 'a']));
       expect(await Task.zip(taskNum)(rejNum)).toEqual(Result.err(404));
     });
 
@@ -3833,14 +3838,14 @@ describe('module-scope functions', () => {
       expect(await rejStr.zipWith(rejNum, combine)).toEqual(Result.err('err1'));
 
       expect(await Task.zipWith(taskNum, taskStr, combine)).toEqual(Result.ok('hello:2'));
-      expect(await Task.zipWith(taskNum, taskStr)(combine)).toEqual(Result.ok('hello:2'));
+      expect(await zipWith(taskNum, taskStr)(combine)).toEqual(Result.ok('hello:2'));
       expect(await Task.zipWith(taskNum)(taskStr, combine)).toEqual(Result.ok('hello:2'));
       expect(await Task.zipWith(taskNum)(taskStr)(combine)).toEqual(Result.ok('hello:2'));
     });
   });
 
-  describe('`sequence` and `traverse`', () => {
-    test('`sequence` with synchronous and asynchronous iterables', async () => {
+  describe('`sequence`, `traverse`, and `traverseSerial`', () => {
+    test('`sequence` runs tasks from an iterable concurrently and rejects on first rejection', async () => {
       const empty = Task.sequence([]);
       expectTypeOf(empty).toEqualTypeOf<Task<never[], never>>();
       expect(await empty).toEqual(Result.ok([]));
@@ -3849,33 +3854,9 @@ describe('module-scope functions', () => {
       expectTypeOf(allResolved).toEqualTypeOf<Task<number[], never>>();
       expect(await allResolved).toEqual(Result.ok([1, 2, 3]));
 
-      const asyncIterable: AsyncIterable<Task<number, string>> = {
-        [Symbol.asyncIterator]() {
-          const items: Array<Task<number, string>> = [Task.resolve(10), Task.resolve(20)];
-          let index = 0;
-          return {
-            async next() {
-              if (index < items.length) {
-                return { value: items[index++]!, done: false };
-              }
-              return { value: undefined, done: true };
-            },
-          };
-        },
-      };
-
-      const fromAsync = Task.sequence(asyncIterable);
-      expectTypeOf(fromAsync).toEqualTypeOf<Task<number[], string>>();
-      expect(await fromAsync).toEqual(Result.ok([10, 20]));
-
-      async function* asyncGen() {
-        yield Task.resolve<number, string>(30);
-        yield Task.resolve<number, string>(40);
-      }
-
-      const fromAsyncGen = Task.sequence(asyncGen());
-      expectTypeOf(fromAsyncGen).toEqualTypeOf<Task<number[], string>>();
-      expect(await fromAsyncGen).toEqual(Result.ok([30, 40]));
+      const fromSet = sequence(new Set([Task.resolve('a'), Task.resolve('b')]));
+      expectTypeOf(fromSet).toEqualTypeOf<Task<string[], never>>();
+      expect(await fromSet).toEqual(Result.ok(['a', 'b']));
 
       const withRejection = Task.sequence([
         Task.resolve(1),
@@ -3886,83 +3867,98 @@ describe('module-scope functions', () => {
       expect(await withRejection).toEqual(Result.err('failed'));
     });
 
-    test('`sequence` stops advancing iterator immediately after first rejection', async () => {
-      let syncSteps = 0;
-      function* syncTasks(): IterableIterator<Task<number, string>> {
-        syncSteps += 1;
-        yield Task.resolve(1);
-        syncSteps += 1;
-        yield Task.reject('stop-sync');
-        syncSteps += 1;
-        yield Task.resolve(3);
-      }
+    test('`traverse` runs mapped tasks concurrently and supports currying', async () => {
+      const started: number[] = [];
+      const resolvers = new Map<number, (val: number) => void>();
 
-      expect(await Task.sequence(syncTasks())).toEqual(Result.err('stop-sync'));
-      expect(syncSteps).toBe(2);
-
-      let asyncSteps = 0;
-      const asyncTasks: AsyncIterable<Task<number, string>> = {
-        [Symbol.asyncIterator]() {
-          const factories: Array<() => Task<number, string>> = [
-            () => Task.resolve(1),
-            () => Task.reject('stop-async'),
-            () => Task.resolve(3),
-          ];
-          let index = 0;
-          return {
-            async next() {
-              if (index < factories.length) {
-                asyncSteps += 1;
-                return { value: factories[index++]!(), done: false };
-              }
-              return { value: undefined, done: true };
-            },
-          };
-        },
-      };
-
-      expect(await Task.sequence(asyncTasks)).toEqual(Result.err('stop-async'));
-      expect(asyncSteps).toBe(2);
-    });
-
-    test('`traverse` with sync/async iterables, currying, and short-circuiting', async () => {
-      const order: number[] = [];
-      const processItem = (n: number): Task<number, string> =>
+      const makeTask = (n: number): Task<number, string> =>
         new Task((resolve, reject) => {
-          order.push(n);
-          if (n > 0) {
-            resolve(n * 2);
-          } else {
+          started.push(n);
+          if (n < 0) {
             reject(`bad: ${n}`);
+          } else {
+            resolvers.set(n, resolve);
           }
         });
 
-      const nonCurriedItemsFirst = Task.traverse([1, 2, 3], (n) => processItem(n));
-      expectTypeOf(nonCurriedItemsFirst).toEqualTypeOf<Task<number[], string>>();
-      expect(await nonCurriedItemsFirst).toEqual(Result.ok([2, 4, 6]));
-      expect(order).toEqual([1, 2, 3]);
+      const concurrent = Task.traverse([1, 2, 3], (n) => makeTask(n));
+      expectTypeOf(concurrent).toEqualTypeOf<Task<number[], string>>();
+      // All tasks are started concurrently before any of them resolve
+      expect(started).toEqual([1, 2, 3]);
 
-      const okRes = await Task.traverse(processItem, [1, 2, 3]);
-      expect(okRes).toEqual(Result.ok([2, 4, 6]));
+      resolvers.get(2)!(20);
+      resolvers.get(1)!(10);
+      resolvers.get(3)!(30);
+      expect(await concurrent).toEqual(Result.ok([10, 20, 30]));
 
-      const curriedFn = Task.traverse(processItem);
+      const doubleTask = (n: number): Task<number, string> =>
+        n > 0 ? Task.resolve(n * 2) : Task.reject(`bad: ${n}`);
+
+      expect(await traverse(doubleTask, [1, 2, 3])).toEqual(Result.ok([2, 4, 6]));
+
+      const curriedFn = Task.traverse(doubleTask);
       expect(await curriedFn(new Set([4, 5]))).toEqual(Result.ok([8, 10]));
+      expect(await curriedFn([1, -2, 3])).toEqual(Result.err('bad: -2'));
 
       const curriedItems = Task.traverse([4, 5]);
+      expect(await curriedItems(doubleTask)).toEqual(Result.ok([8, 10]));
+    });
+
+    test('`traverseSerial` executes tasks sequentially and stops on the first rejection', async () => {
+      const events: string[] = [];
+
+      const makeSerialTask = (n: number): Task<number, string> =>
+        new Task((resolve, reject) => {
+          events.push(`start:${n}`);
+          Promise.resolve().then(() => {
+            events.push(`finish:${n}`);
+            if (n > 0) {
+              resolve(n * 10);
+            } else {
+              reject(`rejected:${n}`);
+            }
+          });
+        });
+
+      const serialTask = Task.traverseSerial([1, 2, 3], (n) => makeSerialTask(n));
+      expectTypeOf(serialTask).toEqualTypeOf<Task<number[], string>>();
+
+      // Only the first task has started initially
+      expect(events).toEqual(['start:1']);
+      expect(await serialTask).toEqual(Result.ok([10, 20, 30]));
+      expect(events).toEqual([
+        'start:1',
+        'finish:1',
+        'start:2',
+        'finish:2',
+        'start:3',
+        'finish:3',
+      ]);
+
+      const processItem = (n: number): Task<number, string> =>
+        n > 0 ? Task.resolve(n * 2) : Task.reject(`bad: ${n}`);
+
+      expect(await traverseSerial(processItem, [1, 2, 3])).toEqual(Result.ok([2, 4, 6]));
+
+      const curriedFn = Task.traverseSerial(processItem);
+      expectTypeOf(curriedFn).toEqualTypeOf<(items: Iterable<number>) => Task<number[], string>>();
+      expect(await curriedFn(new Set([4, 5]))).toEqual(Result.ok([8, 10]));
+
+      const curriedItems = traverseSerial([4, 5]);
       expect(await curriedItems(processItem)).toEqual(Result.ok([8, 10]));
 
-      let visited = 0;
-      async function* asyncNumbers(): AsyncIterableIterator<number> {
-        visited += 1;
+      let syncVisited = 0;
+      function* syncNumbers() {
+        syncVisited += 1;
         yield 1;
-        visited += 1;
-        yield -5;
-        visited += 1;
+        syncVisited += 1;
+        yield -2;
+        syncVisited += 1;
         yield 3;
       }
 
-      expect(await Task.traverse(asyncNumbers(), processItem)).toEqual(Result.err('bad: -5'));
-      expect(visited).toBe(2);
+      expect(await Task.traverseSerial(syncNumbers(), processItem)).toEqual(Result.err('bad: -2'));
+      expect(syncVisited).toBe(2);
     });
   });
 });

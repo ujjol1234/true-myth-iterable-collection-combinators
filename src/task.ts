@@ -77,6 +77,7 @@ class TaskImpl<T, E> implements PromiseLike<Result<T, E>>, AsyncIterable<Result<
   static zipWith: typeof zipWith;
   static sequence: typeof sequence;
   static traverse: typeof traverse;
+  static traverseSerial: typeof traverseSerial;
 
   readonly #promise: Promise<Result<T, E>>;
   #state: Repr<T, E> = [State.Pending];
@@ -1594,6 +1595,7 @@ export interface TaskConstructor {
   zipWith: typeof zipWith;
   sequence: typeof sequence;
   traverse: typeof traverse;
+  traverseSerial: typeof traverseSerial;
 }
 
 // Duplicate documentation because it will show up more nicely when rendered in
@@ -2798,66 +2800,119 @@ export function zipWith<T, E, U, F, V>(
 }
 
 /**
-  Map each element of a synchronous or asynchronous iterable to a
-  {@linkcode Task}, running each task sequentially, and collect the resolved
-  values into a single `Task` of an array. Stops advancing the iterator
-  immediately upon encountering the first rejected `Task`.
+  Map each element of an iterable to a {@linkcode Task}, running all resulting
+  tasks concurrently, and collect the resolved values into a single `Task` of
+  an array. Rejects immediately upon encountering the first rejected `Task`.
 
   @template T The type of items in the input iterable.
   @template U The type of resolved values inside the resulting `Task`.
   @template E The type of rejection reason inside the resulting `Task`.
-  @param items Any `Iterable` or `AsyncIterable` of items to traverse.
+  @param items Any `Iterable` of items to traverse.
   @param fn A function mapping each item to a `Task`.
   @returns A `Task` resolving to an array of resolved values if all tasks
            resolve, or rejecting with the first rejection encountered.
  */
-export function traverse<T, U, E>(
-  items: Iterable<T> | AsyncIterable<T>,
-  fn: (item: T) => Task<U, E> | Result<U, E>
-): Task<U[], E>;
-export function traverse<T, R extends AnyTask | AnyResult>(
-  items: Iterable<T> | AsyncIterable<T>,
+export function traverse<T, U, E>(items: Iterable<T>, fn: (item: T) => Task<U, E>): Task<U[], E>;
+export function traverse<T, R extends AnyTask>(
+  items: Iterable<T>,
   fn: (item: T) => R
 ): Task<Array<ResolvesTo<R>>, RejectsWith<R>>;
-export function traverse<T, U, E>(
-  fn: (item: T) => Task<U, E> | Result<U, E>,
-  items: Iterable<T> | AsyncIterable<T>
-): Task<U[], E>;
-export function traverse<T, R extends AnyTask | AnyResult>(
+export function traverse<T, U, E>(fn: (item: T) => Task<U, E>, items: Iterable<T>): Task<U[], E>;
+export function traverse<T, R extends AnyTask>(
   fn: (item: T) => R,
-  items: Iterable<T> | AsyncIterable<T>
+  items: Iterable<T>
 ): Task<Array<ResolvesTo<R>>, RejectsWith<R>>;
 export function traverse<T, U, E>(
-  fn: (item: T) => Task<U, E> | Result<U, E>
-): (items: Iterable<T> | AsyncIterable<T>) => Task<U[], E>;
-export function traverse<T, R extends AnyTask | AnyResult>(
+  fn: (item: T) => Task<U, E>
+): (items: Iterable<T>) => Task<U[], E>;
+export function traverse<T, R extends AnyTask>(
   fn: (item: T) => R
-): (items: Iterable<T> | AsyncIterable<T>) => Task<Array<ResolvesTo<R>>, RejectsWith<R>>;
-export function traverse<T>(items: Iterable<T> | AsyncIterable<T>): {
+): (items: Iterable<T>) => Task<Array<ResolvesTo<R>>, RejectsWith<R>>;
+export function traverse<T>(items: Iterable<T>): {
+  <U, E>(fn: (item: T) => Task<U, E>): Task<U[], E>;
+  <R extends AnyTask>(fn: (item: T) => R): Task<Array<ResolvesTo<R>>, RejectsWith<R>>;
+};
+export function traverse<T, U, E>(
+  itemsOrFn: Iterable<T> | ((item: T) => Task<U, E>),
+  fnOrItems?: ((item: T) => Task<U, E>) | Iterable<T>
+):
+  | Task<U[], E>
+  | ((items: Iterable<T>) => Task<U[], E>)
+  | ((fn: (item: T) => Task<U, E>) => Task<U[], E>) {
+  const run = (iterable: Iterable<T>, mapper: (item: T) => Task<U, E>): Task<U[], E> =>
+    all(Array.from(iterable, mapper)) as Task<U[], E>;
+
+  if (typeof itemsOrFn === 'function') {
+    return curry1(
+      (iterable: Iterable<T>) => run(iterable, itemsOrFn),
+      fnOrItems as Iterable<T> | undefined
+    );
+  }
+
+  return curry1(
+    (mapper: (item: T) => Task<U, E>) => run(itemsOrFn, mapper),
+    fnOrItems as ((item: T) => Task<U, E>) | undefined
+  );
+}
+
+/**
+  Map each element of an iterable to a {@linkcode Task}, running each task
+  sequentially one at a time, and collect the resolved values into a single
+  `Task` of an array. Stops advancing the iterator immediately upon
+  encountering the first rejected `Task`.
+
+  @template T The type of items in the input iterable.
+  @template U The type of resolved values inside the resulting `Task`.
+  @template E The type of rejection reason inside the resulting `Task`.
+  @param items Any `Iterable` of items to traverse sequentially.
+  @param fn A function mapping each item to a `Task`.
+  @returns A `Task` resolving to an array of resolved values if all tasks
+           resolve, or rejecting with the first rejection encountered.
+ */
+export function traverseSerial<T, U, E>(
+  items: Iterable<T>,
+  fn: (item: T) => Task<U, E> | Result<U, E>
+): Task<U[], E>;
+export function traverseSerial<T, R extends AnyTask | AnyResult>(
+  items: Iterable<T>,
+  fn: (item: T) => R
+): Task<Array<ResolvesTo<R>>, RejectsWith<R>>;
+export function traverseSerial<T, U, E>(
+  fn: (item: T) => Task<U, E> | Result<U, E>,
+  items: Iterable<T>
+): Task<U[], E>;
+export function traverseSerial<T, R extends AnyTask | AnyResult>(
+  fn: (item: T) => R,
+  items: Iterable<T>
+): Task<Array<ResolvesTo<R>>, RejectsWith<R>>;
+export function traverseSerial<T, U, E>(
+  fn: (item: T) => Task<U, E> | Result<U, E>
+): (items: Iterable<T>) => Task<U[], E>;
+export function traverseSerial<T, R extends AnyTask | AnyResult>(
+  fn: (item: T) => R
+): (items: Iterable<T>) => Task<Array<ResolvesTo<R>>, RejectsWith<R>>;
+export function traverseSerial<T>(items: Iterable<T>): {
   <U, E>(fn: (item: T) => Task<U, E> | Result<U, E>): Task<U[], E>;
   <R extends AnyTask | AnyResult>(fn: (item: T) => R): Task<Array<ResolvesTo<R>>, RejectsWith<R>>;
 };
-export function traverse<T, U, E>(
-  itemsOrFn: Iterable<T> | AsyncIterable<T> | ((item: T) => Task<U, E> | Result<U, E>),
-  fnOrItems?: ((item: T) => Task<U, E> | Result<U, E>) | Iterable<T> | AsyncIterable<T>
+export function traverseSerial<T, U, E>(
+  itemsOrFn: Iterable<T> | ((item: T) => Task<U, E> | Result<U, E>),
+  fnOrItems?: ((item: T) => Task<U, E> | Result<U, E>) | Iterable<T>
 ):
   | Task<U[], E>
-  | ((items: Iterable<T> | AsyncIterable<T>) => Task<U[], E>)
+  | ((items: Iterable<T>) => Task<U[], E>)
   | ((fn: (item: T) => Task<U, E> | Result<U, E>) => Task<U[], E>) {
   const run = (
-    iterable: Iterable<T> | AsyncIterable<T>,
+    iterable: Iterable<T>,
     mapper: (item: T) => Task<U, E> | Result<U, E>
   ): Task<U[], E> =>
     new Task((resolve, reject) => {
       (async () => {
         const values: U[] = [];
-        const iterator =
-          Symbol.iterator in iterable
-            ? iterable[Symbol.iterator]()
-            : iterable[Symbol.asyncIterator]();
+        const iterator = iterable[Symbol.iterator]();
 
         while (true) {
-          const step = await iterator.next();
+          const step = iterator.next();
           if (step.done) {
             break;
           }
@@ -2877,8 +2932,8 @@ export function traverse<T, U, E>(
 
   if (typeof itemsOrFn === 'function') {
     return curry1(
-      (iterable: Iterable<T> | AsyncIterable<T>) => run(iterable, itemsOrFn),
-      fnOrItems as Iterable<T> | AsyncIterable<T> | undefined
+      (iterable: Iterable<T>) => run(iterable, itemsOrFn),
+      fnOrItems as Iterable<T> | undefined
     );
   }
 
@@ -2889,33 +2944,29 @@ export function traverse<T, U, E>(
 }
 
 /**
-  Evaluate a synchronous or asynchronous iterable of {@linkcode Task} instances
-  sequentially from left to right and collect their resolved values into a
-  single `Task` of an array. Stops advancing the iterator immediately upon
-  encountering the first rejected `Task`.
+  Evaluate an iterable of {@linkcode Task} instances concurrently and collect
+  their resolved values into a single `Task` of an array. Rejects immediately
+  upon encountering the first rejected `Task`.
 
   @template T The type of the resolved values.
   @template E The type of the rejection reasons.
-  @param tasks Any `Iterable` or `AsyncIterable` of `Task` instances.
+  @param tasks Any `Iterable` of `Task` instances.
   @returns A `Task` resolving to an array of resolved values if all tasks
            resolve, or rejecting with the first rejection encountered.
  */
-export function sequence<T = never, E = never>(
-  tasks: Iterable<Task<T, E> | Result<T, E>> | AsyncIterable<Task<T, E> | Result<T, E>>
-): Task<T[], E>;
-export function sequence<R extends AnyTask | AnyResult>(
-  tasks: Iterable<R> | AsyncIterable<R>
+export function sequence<T = never, E = never>(tasks: Iterable<Task<T, E>>): Task<T[], E>;
+export function sequence<R extends AnyTask>(
+  tasks: Iterable<R>
 ): Task<Array<ResolvesTo<R>>, RejectsWith<R>>;
-export function sequence<T, E>(
-  tasks: Iterable<Task<T, E> | Result<T, E>> | AsyncIterable<Task<T, E> | Result<T, E>>
-): Task<T[], E> {
-  return traverse(identity, tasks);
+export function sequence<T, E>(tasks: Iterable<Task<T, E>>): Task<T[], E> {
+  return traverse(tasks, identity);
 }
 
 TaskImpl.zip = zip;
 TaskImpl.zipWith = zipWith;
 TaskImpl.sequence = sequence;
 TaskImpl.traverse = traverse;
+TaskImpl.traverseSerial = traverseSerial;
 
 /**
   Execute a callback that produces either a {@linkcode Task} or the “sentinel”
